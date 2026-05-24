@@ -14,6 +14,7 @@ import androidx.annotation.RequiresApi
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.topjohnwu.superuser.Shell
@@ -31,9 +32,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class ActivateViewModel : ViewModel() {
 
@@ -92,6 +95,17 @@ class ActivateViewModel : ViewModel() {
     fun setTryToActivate(activate: Boolean) {
         viewModelScope.launch(Dispatchers.Main) {
             tryActivate = activate
+        }
+    }
+
+    fun resetStatus() {
+        activateStatus = ActivateStatus.Disable
+    }
+
+    suspend fun awaitRunning(timeout: Long = 10000) {
+        if (activateStatus is ActivateStatus.Running) return
+        withTimeoutOrNull(timeout) {
+            snapshotFlow { activateStatus }.first { it is ActivateStatus.Running }
         }
     }
 
@@ -187,31 +201,28 @@ class ActivateViewModel : ViewModel() {
         }
     }
 
-    fun startRoot(result: (Int) -> Unit = {}) {
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                if (tryActivate) return@launch result(ACTIVATE_PROCESS)
-                setTryToActivate(true)
+    suspend fun startRoot(): Int = withContext(Dispatchers.IO) {
+        runCatching {
+            if (tryActivate) return@withContext ACTIVATE_PROCESS
+            setTryToActivate(true)
 
-                if (!Shell.getShell().isRoot) {
-                    Shell.getCachedShell()?.close()
-                    result(ACTIVATE_FAILED)
-                    return@launch
-                }
-
-                Shell.cmd(Starter.internalCommand).submit {
-                    if (it.isSuccess) {
-                        AxeronSettings.setLastLaunchMode(AxeronSettings.LaunchMethod.ROOT)
-                        result(ACTIVATE_SUCCESS)
-                    } else {
-                        result(ACTIVATE_FAILED)
-                    }
-                    Shell.getCachedShell()?.close()
-                }
-            }.onFailure {
-                it.printStackTrace()
-                result(ACTIVATE_FAILED)
+            if (!Shell.getShell().isRoot) {
+                Shell.getCachedShell()?.close()
+                return@withContext ACTIVATE_FAILED
             }
+
+            val result = Shell.cmd(Starter.internalCommand).exec()
+            if (result.isSuccess) {
+                AxeronSettings.setLastLaunchMode(AxeronSettings.LaunchMethod.ROOT)
+                ACTIVATE_SUCCESS
+            } else {
+                ACTIVATE_FAILED
+            }
+        }.getOrElse {
+            it.printStackTrace()
+            ACTIVATE_FAILED
+        }.also {
+            Shell.getCachedShell()?.close()
         }
     }
 
@@ -224,26 +235,37 @@ class ActivateViewModel : ViewModel() {
 
     @RequiresApi(Build.VERSION_CODES.R)
     suspend fun startAdbWireless(
-        context: Context, result: (AdbStateInfo) -> Unit = {}
-    ) = withContext(Dispatchers.IO) {
-        if (AdbEnvironment.isWifiRequired() && !isWifiEnabled(context)) return@withContext requestEnableWifi(
-            context
-        )
-        if (tryActivate) return@withContext result(AdbStateInfo.Process("Trying to activate"))
+        context: Context
+    ): AdbStateInfo = withContext(Dispatchers.IO) {
+        if (AdbEnvironment.isWifiRequired() && !isWifiEnabled(context)) {
+            requestEnableWifi(context)
+            return@withContext AdbStateInfo.Failed("WiFi is required")
+        }
+        if (tryActivate) return@withContext AdbStateInfo.Process("Trying to activate")
         setTryToActivate(true)
+        resetStatus()
 
-        AdbStarter.startAdbWireless(context, result)
+        val resultChannel = kotlinx.coroutines.channels.Channel<AdbStateInfo>(1)
+        AdbStarter.startAdbWireless(context) {
+            resultChannel.trySend(it)
+        }
+        resultChannel.receive()
     }
 
     suspend fun startAdbTcp(
-        context: Context, result: (AdbStateInfo) -> Unit = {}
-    ) = withContext(Dispatchers.IO) {
-        if (tryActivate) return@withContext result(AdbStateInfo.Process("Trying to activate"))
+        context: Context
+    ): AdbStateInfo = withContext(Dispatchers.IO) {
+        if (tryActivate) return@withContext AdbStateInfo.Process("Trying to activate")
         setTryToActivate(true)
+        resetStatus()
 
         val tcpPort = AdbEnvironment.getAdbTcpPort()
 
-        AdbStarter.startAdbClient(context, tcpPort, result)
+        val resultChannel = kotlinx.coroutines.channels.Channel<AdbStateInfo>(1)
+        AdbStarter.startAdbClient(context, tcpPort) {
+            resultChannel.trySend(it)
+        }
+        resultChannel.receive()
     }
 
     suspend fun stopAdbTcp(

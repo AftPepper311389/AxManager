@@ -32,15 +32,6 @@ android {
         }
     }
 
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
-        resources {
-            excludes += "**"
-        }
-    }
-
     applicationVariants.all {
         val ts = LocalDateTime.now()
             .format(DateTimeFormatter.ofPattern("yyMMddHHmm"))

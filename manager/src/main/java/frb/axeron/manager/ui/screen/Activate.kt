@@ -213,14 +213,13 @@ fun TcpDebuggingCard(
                 onClick = {
                     scope.launch {
                         loadingDialog.withLoading {
-                            activateViewModel.startAdbTcp(context) { ai ->
-                                scope.launch(Dispatchers.Main) {
-                                    Toast.makeText(context, ai.message, Toast.LENGTH_SHORT).show()
-                                }
+                            val ai = activateViewModel.startAdbTcp(context)
+                            Toast.makeText(context, ai.message, Toast.LENGTH_SHORT).show()
 
-                                Log.e("AxManagerStartAdb", ai.message, ai.cause)
-                                activateViewModel.setTryToActivate(false)
+                            if (ai is AdbStateInfo.Success) {
+                                activateViewModel.awaitRunning()
                             }
+                            activateViewModel.setTryToActivate(false)
                         }
                     }
                 }
@@ -304,13 +303,13 @@ fun WirelessDebuggingCard(
     ) {
         scope.launch {
             loadingDialog.withLoading {
-                activateViewModel.startAdbWireless(context) { ai ->
-                    activateViewModel.setTryToActivate(false)
-                    if (ai is AdbStateInfo.Success) {
-                        val intent = AdbPairingService.stopIntent(context)
-                        context.startService(intent)
-                    }
+                val ai = activateViewModel.startAdbWireless(context)
+                if (ai is AdbStateInfo.Success) {
+                    val intent = AdbPairingService.stopIntent(context)
+                    context.startService(intent)
+                    activateViewModel.awaitRunning()
                 }
+                activateViewModel.setTryToActivate(false)
             }
         }
     }
@@ -445,20 +444,17 @@ fun WirelessDebuggingCard(
                     } else {
                         scope.launch {
                             loadingDialog.withLoading {
-                                activateViewModel.startAdbWireless(context) { ai ->
-                                    scope.launch(Dispatchers.Main) {
-                                        Toast.makeText(context, ai.message, Toast.LENGTH_SHORT).show()
-                                    }
+                                val ai = activateViewModel.startAdbWireless(context)
+                                Toast.makeText(context, ai.message, Toast.LENGTH_SHORT).show()
 
-                                    Log.e("AxManagerStartAdb", ai.message, ai.cause)
-                                    activateViewModel.setTryToActivate(false)
-                                    if (ai is AdbStateInfo.Failed) {
-                                        activateViewModel.startPairingService(context)
-                                    } else if (ai is AdbStateInfo.Success) {
-                                        val intent = AdbPairingService.stopIntent(context)
-                                        context.startService(intent)
-                                    }
+                                if (ai is AdbStateInfo.Failed) {
+                                    activateViewModel.startPairingService(context)
+                                } else if (ai is AdbStateInfo.Success) {
+                                    val intent = AdbPairingService.stopIntent(context)
+                                    context.startService(intent)
+                                    activateViewModel.awaitRunning()
                                 }
+                                activateViewModel.setTryToActivate(false)
                             }
                         }
                     }
@@ -501,6 +497,7 @@ fun RootCard(
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val loadingDialog = rememberLoadingDialog()
 
     ElevatedCard(
         elevation = CardDefaults.cardElevation(
@@ -552,34 +549,21 @@ fun RootCard(
             stringResource(R.string.please_wait)
             Button(
                 onClick = {
-                    activateViewModel.startRoot { state ->
-                        scope.launch(Dispatchers.Main) {
-
+                    scope.launch {
+                        loadingDialog.withLoading {
+                            val state = activateViewModel.startRoot()
                             when (state) {
                                 ActivateViewModel.ACTIVATE_FAILED -> {
-                                    Toast.makeText(
-                                        ctx,
-                                        failed,
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                    Toast.makeText(ctx, failed, Toast.LENGTH_SHORT).show()
                                 }
-                                ActivateViewModel.ACTIVATE_PROCESS -> {
-                                    Toast.makeText(
-                                        ctx,
-                                        "",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
+
                                 ActivateViewModel.ACTIVATE_SUCCESS -> {
-                                    Toast.makeText(
-                                        ctx,
-                                        success,
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                    Toast.makeText(ctx, success, Toast.LENGTH_SHORT).show()
+                                    activateViewModel.awaitRunning()
                                 }
                             }
+                            activateViewModel.setTryToActivate(false)
                         }
-                        activateViewModel.setTryToActivate(false)
                     }
                 }
             ) {

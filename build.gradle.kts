@@ -50,6 +50,18 @@ subprojects {
                 versionCode = verCode
                 versionName = verName
             }
+            packaging {
+                jniLibs {
+                    useLegacyPackaging = true
+//                    excludes += "**/libapplovin-native-crash-reporter.so"
+                }
+                dex {
+                    useLegacyPackaging = true
+                }
+                resources {
+                    excludes += "**"
+                }
+            }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_21
                 targetCompatibility = JavaVersion.VERSION_21
