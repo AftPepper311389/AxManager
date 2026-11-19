@@ -71,9 +71,10 @@ function Stdio() {
   export function spawn(command, args, options) {
     if (typeof args === "undefined") {
       args = [];
-    } else if (typeof args === "object") {
-        // allow for (command, options) signature
+    } else if (!Array.isArray(args)) {
+        // allow for (command, options) signature; an array is always args
         options = args;
+        args = [];
     }
 
     if (typeof options === "undefined") {
@@ -110,6 +111,38 @@ export function fullScreen(isFullScreen) {
   ksu.fullScreen(isFullScreen);
 }
 
+// KernelSU's name for it; AxManager's bridge calls it enableInsets (true = draw under the bars).
+export function enableEdgeToEdge(enable = true) {
+  ksu.enableInsets(enable);
+}
+
 export function toast(message) {
   ksu.toast(message);
+}
+
+export function moduleInfo() {
+  return ksu.moduleInfo();
+}
+
+export function listPackages(type) {
+  try {
+    return JSON.parse(ksu.listPackages(type));
+  } catch (error) {
+    return [];
+  }
+}
+
+export function getPackagesInfo(packages) {
+  try {
+    if (typeof packages !== "string") {
+      packages = JSON.stringify(packages);
+    }
+    return JSON.parse(ksu.getPackagesInfo(packages));
+  } catch (error) {
+    return [];
+  }
+}
+
+export function exit() {
+  ksu.exit();
 }

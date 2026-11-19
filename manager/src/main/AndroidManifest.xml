@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- OTG activation acts as a USB host; optional so phones without it can still install. -->
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="false" />
+
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission
         android:name="android.permission.FOREGROUND_SERVICE"
@@ -18,15 +23,6 @@
         android:maxSdkVersion="32" />
 
     <permission
-        android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
-        android:protectionLevel="signature"
-        tools:node="remove" />
-
-    <uses-permission
-        android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
-        tools:node="remove" />
-
-    <permission
         android:name="frb.axeron.manager.permission.MANAGER"
         android:protectionLevel="signature" />
     <uses-permission android:name="frb.axeron.manager.permission.MANAGER" />
@@ -35,7 +31,6 @@
         android:name=".AxeronApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
-        android:debuggable="true"
         android:directBootAware="true"
         android:enableOnBackInvokedCallback="true"
         android:fullBackupContent="@xml/backup_rules"
@@ -45,16 +40,29 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
         android:theme="@style/Theme.AxManager"
-        tools:ignore="HardcodedDebugMode"
         tools:targetApi="33">
 
+        <!-- singleTask: one AxActivity, in AxManager's own task. Zips from other apps arrive
+             through OpenZipActivity below, never directly. -->
         <activity
             android:name=".ui.AxActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+
+        <!-- Invisible hop for zips opened from other apps: it runs in the sender's task (empty
+             affinity, no history, not in recents) and forwards to AxActivity in a new task. -->
+        <activity
+            android:name=".ui.OpenZipActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Transparent.NoUI">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
 
@@ -74,28 +82,41 @@
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"
             android:theme="@style/GrantPermissions">
             <intent-filter>
-                <action android:name="${applicationId}.intent.action.REQUEST_PERMISSION" />
+                <action android:name="AxRuntime.REQUEST_PERMISSION" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
+        <!-- An app asks for AxManager here, for a result (AxRuntime.REQUEST_ACCESS): the only way
+             an app learns it is here before it is allowed. -->
+        <activity
+            android:name=".ui.RequestAccessActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:theme="@style/Theme.Transparent.NoUI">
+            <intent-filter>
+                <action android:name="AxRuntime.REQUEST_ACCESS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Opened by component only (WebUIActivity.intentFor, its shortcuts): no filter for
+             other apps to find it by. -->
         <activity
             android:name=".ui.webui.WebUIActivity"
             android:autoRemoveFromRecents="true"
             android:documentLaunchMode="intoExisting"
             android:exported="true"
-            android:theme="@style/Theme.AxManager.WebUI">
-            <intent-filter>
-                <action android:name="AxManager.WEB_UI" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </activity>
+            android:theme="@style/Theme.AxManager.WebUI" />
 
+        <!-- For plugins (`am start` as the server's uid): shell and root hold the permission, an
+             app doesn't, so none can show a toast as AxManager. -->
         <activity
             android:name=".Toast"
             android:enabled="true"
             android:excludeFromRecents="true"
             android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"
             android:taskAffinity=":toast"
             android:theme="@style/Theme.Transparent.NoUI">
             <intent-filter>
@@ -104,15 +125,18 @@
             </intent-filter>
         </activity>
 
+        <!-- "Save snippet" in the text selection toolbar; not exported, so AxManager only. -->
         <activity
-            android:name="frb.axeron.server.shell.ShellRequestHandlerActivity"
-            android:directBootAware="true"
+            android:name=".ui.SaveSnippetActivity"
             android:excludeFromRecents="true"
-            android:exported="true"
-            android:theme="@style/GrantPermissions">
+            android:exported="false"
+            android:label="@string/quickshell_bookmark"
+            android:noHistory="true"
+            android:theme="@style/Theme.Transparent.NoUI">
             <intent-filter>
-                <action android:name="AxRuntime.REQUEST_BINDER" />
+                <action android:name="android.intent.action.PROCESS_TEXT" />
                 <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
 
@@ -122,16 +146,14 @@
             android:process=":crash"
             android:theme="@style/Theme.AxManager" />
 
+        <!-- The relay for app_process clients, reached by component
+             (AxeronApiConstant.server.RELAY_RECEIVER): no filter for other apps to find it by. -->
         <receiver
-            android:name="frb.axeron.server.shell.BinderRequestReceiver"
+            android:name="frb.axeron.manager.receiver.BinderRequestReceiver"
             android:directBootAware="true"
             android:enabled="true"
             android:exported="true"
-            tools:ignore="ExportedReceiver">
-            <intent-filter>
-                <action android:name="AxRuntime.REQUEST_BINDER" />
-            </intent-filter>
-        </receiver>
+            tools:ignore="ExportedReceiver" />
 
         <provider
             android:name=".AxManagerProvider"
@@ -165,6 +187,21 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- Pinned-shortcut confirmation; only reached through our own PendingIntent. -->
+        <receiver
+            android:name=".receiver.ShortcutPinnedReceiver"
+            android:exported="false" />
+
+        <!-- Started by the boot receiver only: shows the start after a reboot, step by step.
+             Direct boot aware, as the receiver is: the locked boot broadcast comes before the
+             unlock, when the system won't start a service that isn't. -->
+        <service
+            android:name=".adb.BootWatchdogService"
+            android:directBootAware="true"
+            android:exported="false"
+            android:foregroundServiceType="shortService"
+            tools:ignore="NewApi" />
 
         <service
             android:name=".features.quicksettings.AxeronTileService"

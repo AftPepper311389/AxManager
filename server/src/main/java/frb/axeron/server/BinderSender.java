@@ -31,51 +31,92 @@ public class BinderSender {
 
     private static final Logger LOGGER = new Logger("BinderSender");
 
-    private static final String PERMISSION_MANAGER = "frb.axeron.manager.permission.MANAGER";
-
     private static final String SHIZUKU_PERMISSION_MANAGER = "moe.shizuku.manager.permission.MANAGER";
 
     private static final String PERMISSION = "moe.shizuku.manager.permission.API_V23";
 
-    private static IAxeronService axeronService;
+    private static AxeronService axeronService;
 
     private static final Map<Integer, List<String>> UID_PACKAGE_CACHE = new ConcurrentHashMap<>();
     private static final Set<String> SENT_BINDERS = ConcurrentHashMap.newKeySet();
+
+    // Runtime-permission state the manager last received the binder with.
+    private static volatile boolean managerRuntime;
 
     private static List<String> getPackagesCached(int uid) {
         return UID_PACKAGE_CACHE.computeIfAbsent(uid, PackageManagerApis::getPackagesForUidNoThrow);
     }
 
-    private static void sendBinder(int uid, int pid) throws RemoteException {
-        String key = uid + ":" + pid;
-        if (!SENT_BINDERS.add(key)) {
-            LOGGER.v("Skip duplicate binder send for %s", key);
-            return;
+    private static boolean currentRuntime() {
+        try {
+            return axeronService.checkRuntime();
+        } catch (Throwable e) {
+            return managerRuntime;
         }
+    }
 
+    private static void sendToManager(int userId) {
+        // The uid cache is not reset here: the manager seeds it in attachApplication from the
+        // uid it was validated with, so a reinstalled manager still refreshes it, and a push of
+        // the same binder doesn't leave the gate without a uid while the manager's first gated
+        // calls are on their way.
+        managerRuntime = currentRuntime();
+        AxeronService.sendBinderToManager(axeronService.asBinder(), userId);
+    }
+
+    /**
+     * "Need extra step" flips in system settings without any binder event, so the manager can't
+     * see it. When the manager comes back to the foreground and the runtime-permission check has
+     * changed since its last binder, push the same binder again so it re-reads the server info.
+     */
+    private static void pushRuntimeChange(int uid) {
+        if (!axeronService.isManagerUid(uid))
+            return;
+
+        boolean runtime = currentRuntime();
+        if (runtime == managerRuntime)
+            return;
+
+        LOGGER.i("Runtime permission changed to %s, re-push binder to manager", Boolean.toString(runtime));
+        sendToManager(uid / 100000);
+    }
+
+    private static void sendBinder(int uid, int pid) throws RemoteException {
         int userId = uid / 100000;
 
         List<String> packages = getPackagesCached(uid);
         if (packages.isEmpty())
             return;
 
-        boolean isOurManager = packages.contains(ServerConstants.MANAGER_APPLICATION_ID);
+        // By the manager this server started from (its package and signing certificate), not by
+        // a package name or a permission that names one.
+        boolean isOurManager = axeronService.isManagerUid(uid);
+
+        // An allowed app gets its capability, each process once; pushCapability does nothing for
+        // one that isn't (see ClientCapability).
+        if (!isOurManager && SENT_BINDERS.add(uid + ":" + pid + ":cap")) {
+            axeronService.pushCapability(uid);
+        }
 
         IShizukuService shizukuService = axeronService.getShizukuService();
 
-        // 🔒 secure fast-path
-        if (shizukuService == null && isOurManager) {
-            LOGGER.d(
-                    "Shizuku unavailable, uid %d belongs to manager, send binder directly",
-                    uid
-            );
-            AxeronService.sendBinderToManager(axeronService.asBinder(), userId);
+        // Non-manager uids can only be served while the Shizuku intercept is enabled. Do not mark
+        // them as sent, so they still receive the binder once the intercept is enabled later.
+        if (shizukuService == null && !isOurManager)
+            return;
+
+        String key = uid + ":" + pid;
+        if (!SENT_BINDERS.add(key)) {
+            LOGGER.v("Skip duplicate binder send for %s", key);
             return;
         }
 
-        // Kalau bukan manager, dan shizuku null → STOP
-        if (shizukuService == null)
+        // 🔒 secure fast-path
+        if (isOurManager) {
+            LOGGER.d("uid %d is the manager, send binder directly", uid);
+            sendToManager(userId);
             return;
+        }
 
         LOGGER.d(
                 "sendBinder to uid %d: packages=%s",
@@ -93,22 +134,7 @@ public class BinderSender {
                 if (pi == null || pi.requestedPermissions == null)
                     continue;
 
-                if (ArraysKt.contains(pi.requestedPermissions, PERMISSION_MANAGER)) {
-                    boolean granted = pid == -1
-                            ? PermissionManagerApis.checkPermission(PERMISSION_MANAGER, uid)
-                            == PackageManager.PERMISSION_GRANTED
-                            : ActivityManagerApis.checkPermission(PERMISSION_MANAGER, pid, uid)
-                            == PackageManager.PERMISSION_GRANTED;
-
-                    if (granted) {
-                        AxeronService.sendBinderToManager(
-                                axeronService.asBinder(),
-                                userId
-                        );
-                        return;
-                    }
-
-                } else if (ArraysKt.contains(pi.requestedPermissions, SHIZUKU_PERMISSION_MANAGER)) {
+                if (ArraysKt.contains(pi.requestedPermissions, SHIZUKU_PERMISSION_MANAGER)) {
                     boolean granted = pid == -1
                             ? PermissionManagerApis.checkPermission(SHIZUKU_PERMISSION_MANAGER, uid)
                             == PackageManager.PERMISSION_GRANTED
@@ -116,6 +142,11 @@ public class BinderSender {
                             == PackageManager.PERMISSION_GRANTED;
 
                     if (granted) {
+                        // The server caches the Shizuku app's uid on its first permission check;
+                        // if Shizuku was installed (or reinstalled) after that, the cache is stale
+                        // and its calls get denied. Its process always passes here before it can
+                        // call the server, so refresh the cache now.
+                        axeronService.dispatchPackageChanged(null);
                         AxeronService.sendBinderToShizukuManager(
                                 shizukuService.asBinder(),
                                 userId
@@ -124,6 +155,12 @@ public class BinderSender {
                     }
 
                 } else if (ArraysKt.contains(pi.requestedPermissions, PERMISSION)) {
+                    // Stealth: a client not allowed yet isn't told a server is here. Allowing it
+                    // in the manager hands it the binder then (pushShizukuBinder).
+                    if (axeronService.isStealth() && !axeronService.isAllowed(uid)) {
+                        LOGGER.d("stealth: uid %d isn't allowed, no binder", uid);
+                        return;
+                    }
                     AxeronService.sendBinderToUserApp(
                             shizukuService.asBinder(),
                             packageName,
@@ -138,66 +175,9 @@ public class BinderSender {
         }
     }
 
-
-//    private static void sendBinder(int uid, int pid) {
-//        String key = uid + ":" + pid;
-//        if (!SENT_BINDERS.add(key)) {
-//            LOGGER.v("Skip duplicate binder send for %s", key);
-//            return;
-//        }
-//
-//        List<String> packages = getPackagesCached(uid);
-//        if (packages.isEmpty())
-//            return;
-//
-//        LOGGER.d("sendBinder to uid %d: packages=%s", uid, TextUtils.join(", ", packages));
-//
-//        int userId = uid / 100000;
-//        for (String packageName : packages) {
-//            try {
-//                PackageInfo pi = PackageManagerApis.getPackageInfoNoThrow(packageName, PackageManager.GET_PERMISSIONS, userId);
-//                if (pi == null || pi.requestedPermissions == null)
-//                    continue;
-//
-//                if (ArraysKt.contains(pi.requestedPermissions, PERMISSION_MANAGER)) {
-//                    boolean granted;
-//                    if (pid == -1)
-//                        granted = PermissionManagerApis.checkPermission(PERMISSION_MANAGER, uid) == PackageManager.PERMISSION_GRANTED;
-//                    else
-//                        granted = ActivityManagerApis.checkPermission(PERMISSION_MANAGER, pid, uid) == PackageManager.PERMISSION_GRANTED;
-//
-//                    if (granted) {
-//                        AxeronService.sendBinderToManager(axeronService.asBinder(), userId);
-//                        return;
-//                    }
-//                } else if (ArraysKt.contains(pi.requestedPermissions, SHIZUKU_PERMISSION_MANAGER)) {
-//                    boolean granted;
-//                    if (pid == -1)
-//                        granted = PermissionManagerApis.checkPermission(SHIZUKU_PERMISSION_MANAGER, uid) == PackageManager.PERMISSION_GRANTED;
-//                    else
-//                        granted = ActivityManagerApis.checkPermission(SHIZUKU_PERMISSION_MANAGER, pid, uid) == PackageManager.PERMISSION_GRANTED;
-//
-//                    if (granted) {
-//                        IShizukuService shizukuService = axeronService.getShizukuService();
-//                        if (shizukuService != null)
-//                            AxeronService.sendBinderToShizukuManager(shizukuService.asBinder(), userId);
-//                        return;
-//                    }
-//                } else if (ArraysKt.contains(pi.requestedPermissions, PERMISSION)) {
-//                    IShizukuService shizukuService = axeronService.getShizukuService();
-//                    if (shizukuService != null) {
-//                        AxeronService.sendBinderToUserApp(shizukuService.asBinder(), packageName, userId);
-//                    }
-//                    return;
-//                }
-//            } catch (Throwable e) {
-//                LOGGER.w(e, "sendBinder failed for package %s", packageName);
-//            }
-//        }
-//    }
-
-    public static void register(IAxeronService service) {
+    public static void register(AxeronService service) {
         axeronService = service;
+        managerRuntime = currentRuntime();
 
         try {
             ActivityManagerApis.registerProcessObserver(new ProcessObserver());
@@ -226,11 +206,18 @@ public class BinderSender {
         public void onForegroundActivitiesChanged(int pid, int uid, boolean foregroundActivities) throws RemoteException {
             LOGGER.d("onForegroundActivitiesChanged: pid=%d, uid=%d, foregroundActivities=%s", pid, uid, foregroundActivities ? "true" : "false");
 
+            if (!foregroundActivities) {
+                return;
+            }
+
+            boolean alreadySent;
             synchronized (PID_LIST) {
-                if (PID_LIST.contains(pid) || !foregroundActivities) {
-                    return;
-                }
-                PID_LIST.add(pid);
+                alreadySent = !PID_LIST.add(pid);
+            }
+
+            if (alreadySent) {
+                pushRuntimeChange(uid);
+                return;
             }
 
             sendBinder(uid, pid);
@@ -243,6 +230,8 @@ public class BinderSender {
             synchronized (PID_LIST) {
                 PID_LIST.remove(pid);
             }
+            SENT_BINDERS.remove(uid + ":" + pid);
+            SENT_BINDERS.remove(uid + ":" + pid + ":cap");
         }
 
         @Override
@@ -312,6 +301,11 @@ public class BinderSender {
                 UID_LIST.remove(uid);
                 LOGGER.v("Uid %d dead", uid);
             }
+            // Drop cached packages and sent-binder marks so a restarted uid is served again.
+            UID_PACKAGE_CACHE.remove(uid);
+            SENT_BINDERS.removeIf(key -> key.startsWith(uid + ":"));
+            // An uninstall ends here too, and the uid may go to another app: check its grant again.
+            axeronService.getConfigManager().invalidate(uid);
         }
     }
 }

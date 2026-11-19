@@ -11,6 +11,7 @@ import frb.axeron.server.util.Logger
 import frb.axeron.server.util.UserHandleCompat
 import frb.axeron.shared.AxeronApiConstant
 import frb.axeron.shared.AxeronApiConstant.server.TYPE_ENV
+import frb.axeron.shared.ShizukuApiConstant
 import frb.axeron.shared.ShizukuApiConstant.ATTACH_APPLICATION_API_VERSION
 import frb.axeron.shared.ShizukuApiConstant.ATTACH_APPLICATION_PACKAGE_NAME
 import frb.axeron.shared.ShizukuApiConstant.BINDER_TRANSACTION_transact
@@ -25,6 +26,25 @@ import rikka.parcelablelist.ParcelableListSlice
 class ShizukuServiceIntercept(val shizukuIntercept: ShizukuIntercept) : IShizukuService.Stub() {
     companion object {
         val LOGGER = Logger("ShizukuServiceIntercept")
+
+        // Set while this binder serves a transaction: the Shizuku app is a manager on this path
+        // only, never on the Axeron binder, which any app can read from the sticky.
+        private val serving = ThreadLocal<Boolean>()
+
+        /** Whether the current thread is serving a call that came in through the intercept. */
+        @JvmStatic
+        fun isServing(): Boolean = serving.get() == true
+    }
+
+    /**
+     * Set when the intercept is switched off. Upstream Shizuku kills its server process on stop,
+     * so every client binder dies; ours stays alive, so a revoked instance refuses every call.
+     */
+    @Volatile
+    private var revoked = false
+
+    fun revoke() {
+        revoked = true
     }
 
     override fun getVersion(): Int {
@@ -119,12 +139,20 @@ class ShizukuServiceIntercept(val shizukuIntercept: ShizukuIntercept) : IShizuku
         return false
     }
 
+    // The Shizuku app has no "ask" state: its revoke and its dialog's deny would land as Denied,
+    // which AxManager enforces without a dialog. From that side they mean "not allowed", so they
+    // become Ask (no flag) and the app can still request. Denied stays AxManager's own choice.
+
     override fun dispatchPermissionConfirmationResult(
         requestUid: Int,
         requestPid: Int,
         requestCode: Int,
         data: Bundle?
     ) {
+        if (data != null && !data.getBoolean(ShizukuApiConstant.REQUEST_PERMISSION_REPLY_ALLOWED)) {
+            // A one-time denial is not stored, so the next request asks again.
+            data.putBoolean(ShizukuApiConstant.REQUEST_PERMISSION_REPLY_IS_ONETIME, true)
+        }
         shizukuIntercept.dispatchPermissionConfirmationResult(requestUid, requestPid, requestCode, data)
     }
 
@@ -133,36 +161,46 @@ class ShizukuServiceIntercept(val shizukuIntercept: ShizukuIntercept) : IShizuku
     }
 
     override fun updateFlagsForUid(uid: Int, mask: Int, value: Int) {
-        shizukuIntercept.updateFlagsForUid(uid, mask, value)
+        shizukuIntercept.updateFlagsForUid(uid, mask, value and ConfigManager.FLAG_DENIED.inv())
     }
 
     override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
-        when (code) {
-            ServerConstants.BINDER_TRANSACTION_getApplications -> {
-                data.enforceInterface(AxeronApiConstant.server.SHIZUKU_BINDER_DESCRIPTOR)
-                val userId = data.readInt()
-                val result: ParcelableListSlice<PackageInfo?> = shizukuIntercept.getApplications(userId)
-                reply!!.writeNoException()
-                result.writeToParcel(reply, Parcelable.PARCELABLE_WRITE_RETURN_VALUE)
-                return true
+        // INTERFACE_TRANSACTION only reports the descriptor; everything else is refused.
+        if (revoked && code != INTERFACE_TRANSACTION) {
+            throw SecurityException("AX-Permission Intercept is disabled")
+        }
+        val outer = serving.get()
+        serving.set(true)
+        try {
+            when (code) {
+                ServerConstants.BINDER_TRANSACTION_getApplications -> {
+                    data.enforceInterface(AxeronApiConstant.server.SHIZUKU_BINDER_DESCRIPTOR)
+                    val userId = data.readInt()
+                    val result: ParcelableListSlice<PackageInfo?> = shizukuIntercept.getApplications(userId)
+                    reply!!.writeNoException()
+                    result.writeToParcel(reply, Parcelable.PARCELABLE_WRITE_RETURN_VALUE)
+                    return true
+                }
+                BINDER_TRANSACTION_transact -> {
+                    data.enforceInterface(AxeronApiConstant.server.SHIZUKU_BINDER_DESCRIPTOR)
+                    shizukuIntercept.transactRemote(data, reply, flags)
+                    return true
+                }
+                14 -> {
+                    data.enforceInterface(AxeronApiConstant.server.SHIZUKU_BINDER_DESCRIPTOR)
+                    val binder = data.readStrongBinder()
+                    val packageName = data.readString()
+                    val args = Bundle()
+                    args.putString(ATTACH_APPLICATION_PACKAGE_NAME, packageName)
+                    args.putInt(ATTACH_APPLICATION_API_VERSION, -1)
+                    attachApplication(IShizukuApplication.Stub.asInterface(binder), args)
+                    reply!!.writeNoException()
+                    return true
+                }
+                else -> return super.onTransact(code, data, reply, flags)
             }
-            BINDER_TRANSACTION_transact -> {
-                data.enforceInterface(AxeronApiConstant.server.SHIZUKU_BINDER_DESCRIPTOR)
-                shizukuIntercept.transactRemote(data, reply, flags)
-                return true
-            }
-            14 -> {
-                data.enforceInterface(AxeronApiConstant.server.SHIZUKU_BINDER_DESCRIPTOR)
-                val binder = data.readStrongBinder()
-                val packageName = data.readString()
-                val args = Bundle()
-                args.putString(ATTACH_APPLICATION_PACKAGE_NAME, packageName)
-                args.putInt(ATTACH_APPLICATION_API_VERSION, -1)
-                attachApplication(IShizukuApplication.Stub.asInterface(binder), args)
-                reply!!.writeNoException()
-                return true
-            }
-            else -> return super.onTransact(code, data, reply, flags)
+        } finally {
+            serving.set(outer)
         }
     }
 }

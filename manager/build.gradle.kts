@@ -1,14 +1,18 @@
+import com.android.build.api.artifact.SingleArtifact
+import com.android.build.api.variant.FilterConfiguration
+import com.android.build.api.variant.impl.VariantOutputImpl
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.rikka.tools.refine)
     id("kotlin-parcelize")
 }
+
+val splitAbis = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
 
 android {
     namespace = "frb.axeron.manager"
@@ -32,28 +36,15 @@ android {
         }
     }
 
-    applicationVariants.all {
-        val ts = LocalDateTime.now()
-            .format(DateTimeFormatter.ofPattern("yyMMddHHmm"))
-        outputs.all {
-            val outputImpl = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
-            outputImpl.outputFileName = "AxManager_v${versionName}_${versionCode}-${buildType.name}_$ts.apk"
-
-            val outDir = File(rootDir, "out")
-            val mappingPath = File(outDir, "mapping").absolutePath
-
-            assembleProvider.get().doLast {
-                // copy mapping.txt kalau minify aktif
-                if (buildType.isMinifyEnabled) {
-                    copy {
-                        from(mappingFileProvider.get())
-                        into(mappingPath)
-                        rename {
-                            "manager-v${versionName}.txt"
-                        }
-                    }
-                }
-            }
+    // Release: an APK per ABI plus a universal one. Only the ABIs the server ships its binaries
+    // for (server/src/main/jniLibs). Off for other builds, so Studio's run installs one APK.
+    // Every APK keeps the same versionCode: the server's update check goes by it.
+    splits {
+        abi {
+            isEnable = splitAbis
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = true
         }
     }
 
@@ -63,10 +54,50 @@ android {
     }
 }
 
+androidComponents {
+    onVariants { variant ->
+        val ts = LocalDateTime.now()
+            .format(DateTimeFormatter.ofPattern("yyMMddHHmm"))
+        val buildTypeName = variant.buildType ?: variant.name
+        variant.outputs.forEach { output ->
+            val abi = output.filters
+                .firstOrNull { it.filterType == FilterConfiguration.FilterType.ABI }
+                ?.identifier
+                ?: if (splitAbis) "universal" else null
+            val abiSuffix = abi?.let { "-$it" } ?: ""
+            if (output is VariantOutputImpl) {
+                val verName = output.versionName.orNull
+                val verCode = output.versionCode.orNull
+                output.outputFileName.set(
+                    "AxManager_v${verName}_${verCode}-${buildTypeName}${abiSuffix}_$ts.apk"
+                )
+            }
+        }
+
+        if (variant.isMinifyEnabled) {
+            val mappingFileProvider = variant.artifacts.get(SingleArtifact.OBFUSCATION_MAPPING_FILE)
+            val mainOutput = variant.outputs.firstOrNull()
+            val verNameProvider = mainOutput?.versionName
+            val capName = variant.name.replaceFirstChar { it.uppercase() }
+            val copyTask = tasks.register<Copy>("copy${capName}Mapping") {
+                from(mappingFileProvider)
+                into(rootProject.layout.projectDirectory.dir("out/mapping"))
+                rename {
+                    "manager-v${verNameProvider?.orNull}.txt"
+                }
+            }
+            tasks.matching { it.name == "assemble$capName" }.configureEach {
+                finalizedBy(copyTask)
+            }
+        }
+    }
+}
+
 dependencies {
 
     implementation(platform(libs.compose.bom))
     androidTestImplementation(platform(libs.compose.bom))
+    testImplementation(libs.junit)
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons.extended)
@@ -75,7 +106,6 @@ dependencies {
     implementation(libs.colorpicker.compose)
 
     implementation(libs.compose.coil)
-    implementation(libs.appiconloader.coil)
 
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.core.ktx)
@@ -98,10 +128,12 @@ dependencies {
     implementation(project(":shared"))
     implementation(project(":provider"))
     implementation(project(":server-shared"))
-    implementation(project(":axerish"))
+    // libaxsh.so (default shell, and the binary other apps exec) plus its broker/bootstrap.
+    implementation(project(":axsh"))
+    // libaxreignite.so: the plugin igniter, run by the plugin service and the server's watchdog.
+    implementation(project(":reignite"))
     implementation(libs.sdp.android)
     implementation(libs.material)
-    implementation(libs.mmrl.ui)
     implementation(libs.hiddenapibypass)
     implementation(libs.ansi.library)
     implementation(libs.ansi.library.ktx)
@@ -109,4 +141,5 @@ dependencies {
     implementation(libs.sheet.compose.dialogs.core)
     implementation(libs.sheet.compose.dialogs.list)
     implementation(libs.sheet.compose.dialogs.input)
+    implementation(libs.capsule)
 }

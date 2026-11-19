@@ -1,3 +1,4 @@
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
@@ -10,6 +11,7 @@
 #include <sys/system_properties.h>
 #include <cerrno>
 #include <string>
+#include <vector>
 #include <termios.h>
 #include "misc.h"
 #include "selinux.h"
@@ -30,7 +32,6 @@
 #define EXIT_FATAL_KILL 9
 #define EXIT_FATAL_BINDER_BLOCKED_BY_SELINUX 10
 
-#define PACKAGE_NAME "frb.axeron.manager"
 #define SERVER_NAME "axeron_server"
 #define SERVER_CLASS_PATH "frb.axeron.server.AxeronService"
 
@@ -44,11 +45,76 @@
 #define ABI "arm64"
 #endif
 
+// In AXERONDIR, written by the server at start. Must match START_ENV_FILE in AxeronService.kt.
+#define START_ENV_FILE "server_env"
+
+/** [path]'s whole content; empty when it can't be read. */
+static std::string read_file(const char *path) {
+    std::string data;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd == -1) return data;
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof(buf))) > 0) data.append(buf, n);
+    close(fd);
+    return data;
+}
+
+/**
+ * Run from inside AxManager (a relaunch, the manager's root shell, a plugin's script), the
+ * starter has the env the server gives its children, the user's variables included: passed on,
+ * it would become the new server's own and grow with every restart. Such an env carries AXERON
+ * and AXERONDIR, where the server saved the env it was itself started with; that one replaces
+ * it. A saved env from before the last boot is left alone (an APEX update can change
+ * BOOTCLASSPATH), and so is one missing: the env is then passed on as it is.
+ */
+static void use_start_env() {
+    if (getenv("AXERON") == nullptr) return;
+    const char *dir = getenv("AXERONDIR");
+    if (dir == nullptr || dir[0] == '\0') return;
+
+    std::string data = read_file((std::string(dir) + "/" START_ENV_FILE).c_str());
+    size_t header = data.find('\n');
+    if (header == std::string::npos) {
+        printf("warn: no saved start env in %s, passing this one on\n", dir);
+        return;
+    }
+    std::string boot_id = read_file("/proc/sys/kernel/random/boot_id");
+    while (!boot_id.empty() && isspace((unsigned char) boot_id.back())) boot_id.pop_back();
+    if (boot_id.empty() || data.compare(0, header, boot_id) != 0) {
+        printf("warn: saved start env is from another boot, passing this one on\n");
+        return;
+    }
+
+    std::vector<std::string> env;
+    size_t start = header + 1;
+    while (start < data.size()) {
+        size_t end = data.find('\0', start);
+        if (end == std::string::npos) end = data.size();
+        if (end > start) env.emplace_back(data, start, end - start);
+        start = end + 1;
+    }
+    if (env.empty()) return;
+
+    clearenv();
+    for (const auto &entry : env) {
+        size_t eq = entry.find('=');
+        if (eq == 0 || eq == std::string::npos) continue;
+        setenv(entry.substr(0, eq).c_str(), entry.c_str() + eq + 1, true);
+    }
+    printf("info: using the server's saved start env\n");
+}
+
 static void run_server(const char *dex_path, const char *main_class, const char *process_name) {
     if (setenv("CLASSPATH", dex_path, true)) {
         LOGE("can't set CLASSPATH\n");
         exit(EXIT_FATAL_SET_CLASSPATH);
     }
+
+    // A plugin's process marker. Started from a plugin's script (one that restarts AxManager),
+    // the server would inherit it and pass it to every process it starts, so stopping that
+    // plugin would take all of them down. The server never belongs to a plugin.
+    unsetenv("AXERON_PLUGIN");
 
 #define ARG(v) char **v = nullptr; \
     char buf_##v[PATH_MAX]; \
@@ -254,16 +320,27 @@ int main(int argc, char *argv[]) {
         fflush(stdout);
     }
 
+    // Run without --apk (adb shell <libaxeron.so>, from a PC): the starter is a library of the
+    // manager's APK, <app dir>/lib/<abi>/libaxeron.so, with the APK at <app dir>/base.apk. No
+    // package name needed: the manager is the app this file belongs to.
     if (apk_path.empty()) {
-        auto f = popen("pm path " PACKAGE_NAME, "r");
-        if (f) {
-            char line[PATH_MAX]{0};
-            fgets(line, PATH_MAX, f);
-            trim(line);
-            if (strstr(line, "package:") == line) {
-                apk_path = line + strlen("package:");
+        char exe[PATH_MAX]{0};
+        ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        if (len > 0) {
+            std::string dir(exe, len);
+            for (int i = 0; i < 3; ++i) {
+                auto slash = dir.rfind('/');
+                if (slash == std::string::npos) {
+                    dir.clear();
+                    break;
+                }
+                dir.erase(slash);
             }
-            pclose(f);
+            if (!dir.empty()) {
+                apk_path = dir + "/base.apk";
+                printf("info: apk path from the starter's own location\n");
+                fflush(stdout);
+            }
         }
     }
 
@@ -277,6 +354,9 @@ int main(int argc, char *argv[]) {
         perrorf("fatal: can't access manager %s\n", apk_path.c_str());
         exit(EXIT_FATAL_PM_PATH);
     }
+
+    // Before the fork: the server's child has its output on /dev/null.
+    use_start_env();
 
     printf("info: starting server...\n");
     fflush(stdout);

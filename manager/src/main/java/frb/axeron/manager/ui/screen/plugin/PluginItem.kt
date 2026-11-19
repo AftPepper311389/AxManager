@@ -32,13 +32,13 @@ import androidx.compose.material.icons.outlined.Web
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DividerDefaults
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,20 +59,24 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import com.ramcosta.composedestinations.generated.destinations.ExecutePluginActionScreenDestination
+import com.ramcosta.composedestinations.generated.destinations.FlashScreenDestination
+import frb.axeron.manager.ui.screen.FlashIt
 import com.ramcosta.composedestinations.navigation.DestinationsNavigator
 import frb.axeron.api.Axeron
-import frb.axeron.api.AxeronPluginService
 import frb.axeron.manager.R
+import frb.axeron.manager.ui.component.AxCard
+import frb.axeron.manager.ui.component.AxCardShape
+import frb.axeron.manager.ui.component.AxOptionsSheet
 import frb.axeron.manager.ui.component.ConfirmResult
 import frb.axeron.manager.ui.component.ExtraLabel
 import frb.axeron.manager.ui.component.ExtraLabelDefaults
 import frb.axeron.manager.ui.component.SettingsItem
 import frb.axeron.manager.ui.component.SettingsItemType
-import frb.axeron.manager.ui.component.createWebUIShortcut
+import frb.axeron.manager.ui.component.SettingsRow
 import frb.axeron.manager.ui.component.formatSize
 import frb.axeron.manager.ui.component.rememberConfirmDialog
-import frb.axeron.manager.ui.component.rememberLoadingDialog
+import frb.axeron.manager.ui.component.rememberReigniteSheet
+import frb.axeron.manager.ui.util.rememberPluginBanner
 import frb.axeron.manager.ui.viewmodel.PluginViewModel
 import frb.axeron.manager.ui.viewmodel.SettingsViewModel
 import frb.axeron.server.PluginInfo
@@ -88,44 +92,41 @@ fun PluginConfig(
     plugin: PluginInfo,
     onDismissRequest: () -> Unit
 ) {
+    var showShortcutSheet by remember { mutableStateOf(false) }
+    if (showShortcutSheet) {
+        WebUiShortcutSheet(
+            plugin = plugin,
+            onDismissRequest = { showShortcutSheet = false }
+        )
+    }
+
     if (showDialog) {
-        ModalBottomSheet(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+        AxOptionsSheet(
+            title = stringResource(R.string.web_ui_configuration),
             onDismissRequest = onDismissRequest
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                val context = LocalContext.current
-
-                SettingsItem(
-                    label = stringResource(R.string.web_ui_configuration),
-                    iconVector = Icons.Outlined.Web,
-                ) { _, _ ->
-                    HorizontalDivider(
-                        Modifier,
-                        DividerDefaults.Thickness,
-                        MaterialTheme.colorScheme.secondaryContainer
-                    )
-                    SettingsItem(
-                        type = SettingsItemType.CHILD,
-                        enabled = plugin.hasWebUi,
-                        iconVector = Icons.Outlined.Home,
-                        label = stringResource(R.string.add_web_ui_shortcut),
-                        description = stringResource(R.string.add_web_ui_shortcut_msg),
-                        onClick = {
-                            createWebUIShortcut(
-                                context = context,
-                                plugin = plugin
-                            )
+            AxCard {
+                SettingsRow(
+                    enabled = plugin.hasWebUi,
+                    iconVector = Icons.Outlined.Home,
+                    label = stringResource(R.string.add_web_ui_shortcut),
+                    description = stringResource(R.string.add_web_ui_shortcut_msg),
+                    onClick = {
+                        if (plugin.hasWebUi) {
+                            // Swap this sheet for the shortcut editor.
+                            onDismissRequest()
+                            showShortcutSheet = true
                         }
-                    )
-                }
+                    }
+                )
+            }
 
-
+            // Reserved for upcoming WebUI options.
+            AxCard {
+                SettingsRow(
+                    label = stringResource(R.string.web_ui_more_soon),
+                    description = stringResource(R.string.web_ui_more_soon_desc)
+                )
             }
         }
     }
@@ -155,13 +156,16 @@ fun PluginItem(
         showExtraSetDialog = false
     }
 
-    ElevatedCard(
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
+            .clip(AxCardShape)
             .combinedClickable(
                 onClick = onExpandToggle,
-            )
+            ),
+        shape = AxCardShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 2.dp
     ) {
         Box(
             modifier = Modifier
@@ -170,10 +174,11 @@ fun PluginItem(
             val context = LocalContext.current
             val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
             val useBanner = prefs.getBoolean("use_banner", true)
+            // URL or file bytes, read off the main thread; shared with the shortcut sheet.
+            val banner = if (useBanner) rememberPluginBanner(plugin) else null
 
-            if (useBanner && plugin.prop.banner.isNotEmpty()) {
+            if (banner != null) {
                 val colorScheme = MaterialTheme.colorScheme
-                val context = LocalContext.current
                 val fadeColor = colorScheme.surfaceVariant
                 val alpha = 0.5f
 
@@ -182,58 +187,15 @@ fun PluginItem(
                         .matchParentSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (plugin.prop.banner.startsWith(
-                            "https",
-                            true
-                        ) || plugin.prop.banner.startsWith(
-                            "http",
-                            true
-                        )
-                    ) {
-                        AsyncImage(
-                            model = plugin.prop.banner,
-                            contentDescription = null,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .fillMaxHeight(),
-                            contentScale = ContentScale.Crop,
-                            alpha = 0.18f
-                        )
-                    } else {
-                        val bannerData = remember(plugin.prop.id) {
-                            try {
-                                val path = File(
-                                    PathHelper.getWorkingPath(
-                                        Axeron.getAxeronInfo().isRoot(),
-                                        AxeronApiConstant.folder.PARENT_PLUGIN
-                                    ),
-                                    plugin.prop.id
-                                )
-                                val bannerFile = File(path, plugin.prop.banner)
-                                val file =
-                                    Axeron.newFileService()
-                                        .setFileInputStream(bannerFile.absolutePath)
-                                file?.use {
-                                    it.readBytes()
-                                }
-                            } catch (_: Exception) {
-                                null
-                            }
-                        }
-                        if (bannerData != null) {
-                            AsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(bannerData)
-                                    .build(),
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .fillMaxHeight(),
-                                contentScale = ContentScale.Crop,
-                                alpha = 0.18f
-                            )
-                        }
-                    }
+                    AsyncImage(
+                        model = banner,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .fillMaxHeight(),
+                        contentScale = ContentScale.Crop,
+                        alpha = 0.18f
+                    )
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -265,7 +227,7 @@ fun PluginItem(
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         val confirmDialog = rememberConfirmDialog()
-                        val reigniteLoading = rememberLoadingDialog()
+                        val reigniteSheet = rememberReigniteSheet()
                         val scope = rememberCoroutineScope()
 
                         val pluginVersion = stringResource(R.string.plugin_version)
@@ -320,9 +282,7 @@ fun PluginItem(
                                                     neutral = neutral
                                                 )
                                                 if (result == ConfirmResult.Neutral) {
-                                                    val success = reigniteLoading.withLoading {
-                                                        AxeronPluginService.igniteSuspendService()
-                                                    }
+                                                    val success = reigniteSheet.reignite()
 
                                                     if (success) {
                                                         viewModel.fetchModuleList()
@@ -484,7 +444,7 @@ fun PluginItem(
                                     enabled = !plugin.remove && plugin.enabled && !plugin.update,
                                     onClick = {
                                         navigator!!.navigate(
-                                            ExecutePluginActionScreenDestination(plugin)
+                                            FlashScreenDestination(FlashIt.PluginAction(plugin))
                                         )
                                         viewModel.markNeedRefresh()
                                     },

@@ -20,10 +20,12 @@ import frb.axeron.api.Axeron
 import frb.axeron.manager.AxeronApplication.Companion.axeronApp
 import frb.axeron.manager.ui.util.HanziToPinyin
 import frb.axeron.manager.ui.webui.AppIconUtil
-import frb.axeron.server.util.AxWebLoader
+import frb.axeron.manager.ui.webui.AxWebLoader
 import frb.axeron.shared.AxeronApiConstant
 import frb.axeron.shared.PathHelper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.parcelize.Parcelize
 import java.io.ByteArrayInputStream
@@ -35,16 +37,19 @@ class AppsViewModel(application: Application) : AndroidViewModel(application) {
     @Parcelize
     data class AppInfo(
         val label: String,
+        val pinyinLabel: String,
         val packageInfo: PackageInfo,
         val isAdded: Boolean,
+        /** Privilege list only: denied in the manager, so its requests get no dialog. */
+        val isDenied: Boolean = false,
     ) : Parcelable {
         class Handler : AxWebLoader.PathHandler {
             override fun handle(
                 context: Context,
-                view: WebView?,
-                request: WebResourceRequest?
+                view: WebView,
+                request: WebResourceRequest
             ): WebResourceResponse? {
-                val packageName = request!!.url.path.toString().substring(1) // buang leading "/"
+                val packageName = request.url.path.toString().substring(1) // buang leading "/"
                 val icon: Bitmap? = AppIconUtil.loadAppIconSync(packageName, 512)
                 if (icon != null) {
                     val stream = ByteArrayOutputStream()
@@ -72,20 +77,22 @@ class AppsViewModel(application: Application) : AndroidViewModel(application) {
     var search by mutableStateOf("")
 
     val addedList by derivedStateOf {
+        val q = search
+        if (q.isEmpty()) return@derivedStateOf addedApps
         addedApps.filter {
-            it.label.contains(search, ignoreCase = true) ||
-                    it.packageName.contains(search, ignoreCase = true) ||
-                    HanziToPinyin.getInstance().toPinyinString(it.label)
-                        .contains(search, ignoreCase = true)
+            it.label.contains(q, ignoreCase = true) ||
+                    it.packageName.contains(q, ignoreCase = true) ||
+                    it.pinyinLabel.contains(q, ignoreCase = true)
         }
     }
 
     val installedList by derivedStateOf {
+        val q = search
+        if (q.isEmpty()) return@derivedStateOf installedApps
         installedApps.filter {
-            it.label.contains(search, ignoreCase = true) ||
-                    it.packageName.contains(search, ignoreCase = true) ||
-                    HanziToPinyin.getInstance().toPinyinString(it.label)
-                        .contains(search, ignoreCase = true)
+            it.label.contains(q, ignoreCase = true) ||
+                    it.packageName.contains(q, ignoreCase = true) ||
+                    it.pinyinLabel.contains(q, ignoreCase = true)
         }
     }
 
@@ -109,14 +116,18 @@ class AppsViewModel(application: Application) : AndroidViewModel(application) {
             addedPackageNames = getSavedPackageNames()
             val packages = Axeron.getPackages(0)
 
-            val apps = packages.map {
-                val appInfo = it.applicationInfo!!
-                AppInfo(
-                    label = appInfo.loadLabel(pm).toString(),
-                    packageInfo = it,
-                    isAdded = it.packageName in addedPackageNames
-                )
-            }.filterNot {
+            val apps = packages.map { packageInfo ->
+                async {
+                    val appInfo = packageInfo.applicationInfo!!
+                    val label = appInfo.loadLabel(pm).toString()
+                    AppInfo(
+                        label = label,
+                        pinyinLabel = HanziToPinyin.getInstance().toPinyinString(label),
+                        packageInfo = packageInfo,
+                        isAdded = packageInfo.packageName in addedPackageNames
+                    )
+                }
+            }.awaitAll().filterNot {
                 // jangan masukin ke list kalau system app atau app lo sendiri
                 it.packageName == axeronApp.packageName ||
                         it.packageInfo.applicationInfo!!.flags.and(ApplicationInfo.FLAG_SYSTEM) != 0

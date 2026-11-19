@@ -1,6 +1,5 @@
 plugins {
     alias(libs.plugins.android.library)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.rikka.tools.refine)
     id("kotlin-parcelize")
 }
@@ -31,9 +30,8 @@ android {
 }
 
 dependencies {
-    implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.annotation)
-    implementation(libs.toml4j)
+    implementation(libs.gson)
 
     implementation(libs.rikka.parcelablelist)
     annotationProcessor(libs.rikka.refine.annotation.processor)
@@ -42,8 +40,6 @@ dependencies {
     implementation(libs.rikka.hidden.compat)
     compileOnly(libs.rikka.hidden.stub)
 
-
-//    implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
 
     implementation(libs.libcxx)
@@ -52,7 +48,7 @@ dependencies {
     implementation(project(":shared"))
     implementation(project(":api"))
     implementation(project(":provider"))
-    implementation(project(":rish"))
+    implementation(project(":axsh"))
     implementation(project(":server-shared"))
     compileOnly(project(":server:stub"))
 }

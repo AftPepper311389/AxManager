@@ -1,69 +1,72 @@
 package frb.axeron.manager.ui.screen
 
-import android.content.Context
-import android.util.Log
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.TextSnippet
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.outlined.Android
+import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Save
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.outlined.SearchOff
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.UnfoldMore
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DividerDefaults
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SecondaryScrollableTabRow
-import androidx.compose.material3.Tab
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.VerticalDivider
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,28 +74,82 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import frb.axeron.manager.data.QuickSettingsStore
+import frb.axeron.manager.ui.component.AxDropdownDivider
+import frb.axeron.manager.ui.component.AxDropdownHeader
+import frb.axeron.manager.ui.component.AxDropdownItem
+import frb.axeron.manager.ui.component.AxDropdownMenu
+import androidx.compose.material.icons.outlined.Key
+import frb.axeron.manager.ui.component.AxCardShape
+import frb.axeron.manager.ui.component.ScrollableTextField
+import frb.axeron.manager.ui.component.containScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ramcosta.composedestinations.annotation.Destination
 import com.ramcosta.composedestinations.annotation.RootGraph
 import com.ramcosta.composedestinations.navigation.DestinationsNavigator
 import frb.axeron.manager.R
-import frb.axeron.manager.data.SettingsRepository
+import frb.axeron.manager.data.SettingsRepository.SettingType
+import frb.axeron.manager.ui.component.AxCard
+import frb.axeron.manager.ui.component.AxOptionsSheet
+import frb.axeron.manager.ui.component.AxPanelShape
+import frb.axeron.manager.ui.component.AxPullToRefreshBox
 import frb.axeron.manager.ui.component.ConfirmResult
+import frb.axeron.manager.ui.component.EmptyState
+import frb.axeron.manager.ui.component.FastScrollbar
+import frb.axeron.manager.ui.component.FloatingBarFab
+import frb.axeron.manager.ui.component.OptionTile
+import frb.axeron.manager.ui.component.OptionTileGrid
+import frb.axeron.manager.ui.component.OptionsSectionHeader
 import frb.axeron.manager.ui.component.SearchAppBar
+import frb.axeron.manager.ui.component.SectionHeader
+import frb.axeron.manager.ui.component.StatusPill
 import frb.axeron.manager.ui.component.rememberConfirmDialog
 import frb.axeron.manager.ui.util.ClipboardUtil
+import frb.axeron.manager.ui.util.LocalFloatingBarInset
+import frb.axeron.manager.ui.viewmodel.SettingsEditorViewModel
+import frb.axeron.manager.ui.viewmodel.SettingsEditorViewModel.Entry
+import frb.axeron.manager.ui.viewmodel.SettingsEditorViewModel.EnvLock
 import frb.axeron.manager.ui.viewmodel.ViewModelGlobal
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+
+/** Lines the value field shows before it scrolls internally. */
+private const val VALUE_FIELD_MAX_LINES = 10
+
+/** What the editor sheet is open for. */
+@Immutable
+private data class EditTarget(
+    val type: SettingType,
+    val key: String,
+    val value: String,
+    val isNew: Boolean
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Destination<RootGraph>
@@ -101,228 +158,218 @@ fun SettingsEditorScreen(
     navigator: DestinationsNavigator,
     viewModelGlobal: ViewModelGlobal
 ) {
-    val context = LocalContext.current
-    val contentResolver = context.contentResolver
+    val viewModel: SettingsEditorViewModel = viewModel()
     val scope = rememberCoroutineScope()
 
-    /* ================= SOURCE OF TRUTH ================= */
+    // Page 0 is "All" (null); the rest are the individual sources.
+    val pages = remember { listOf<SettingType?>(null) + SettingType.entries }
+    val pagerState = rememberPagerState(pageCount = { pages.size })
+    val listStates = remember { pages.map { LazyListState() } }
+    val currentType = pages[pagerState.currentPage]
 
-    val settingTypes = remember {
-        SettingsRepository.SettingType.entries.toList()
-    }
-
-    var selectedType by remember {
-        mutableStateOf(SettingsRepository.SettingType.GLOBAL)
-    }
-
-    var query by remember { mutableStateOf("") }
     var showFab by remember { mutableStateOf(true) }
+    var editing by remember { mutableStateOf<EditTarget?>(null) }
 
-    val settingsRepository = remember(contentResolver) {
-        SettingsRepository(contentResolver)
-    }
+    LaunchedEffect(pagerState.currentPage) {
+        showFab = true
+        viewModel.ensureLoaded(pages[pagerState.currentPage])
 
-    /* ================= PAGER ================= */
-
-    val pagerState = rememberPagerState(
-        initialPage = settingTypes.indexOf(selectedType),
-        pageCount = { settingTypes.size }
-    )
-
-    /* ================= STATE CACHES ================= */
-
-    val dataCache = remember {
-        mutableStateMapOf<SettingsRepository.SettingType, Map<String, String?>>()
-    }
-
-    val loadingStates = remember {
-        mutableStateMapOf<SettingsRepository.SettingType, Boolean>()
-    }
-
-    val scrollStates = remember {
-        mutableStateMapOf<SettingsRepository.SettingType, LazyListState>()
-    }
-
-    /* ================= SYNC PAGER → TAB ================= */
-
-    LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.currentPage }
-            .distinctUntilChanged()
-            .collect { page ->
-                selectedType = settingTypes[page]
-                showFab = true
+        // FAB hides while scrolling down the current page and returns on the way up.
+        val listState = listStates[pagerState.currentPage]
+        var lastIndex = listState.firstVisibleItemIndex
+        var lastOffset = listState.firstVisibleItemScrollOffset
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (i, o) ->
+                val down = i > lastIndex || (i == lastIndex && o > lastOffset + 4)
+                val up = i < lastIndex || (i == lastIndex && o < lastOffset - 4)
+                if (down) showFab = false else if (up) showFab = true
+                lastIndex = i
+                lastOffset = o
             }
     }
 
-    /* ================= REFRESH EVENT ================= */
-
-    fun refresh(type: SettingsRepository.SettingType) {
-        scope.launch {
-            loadingStates[type] = true
-            dataCache[type] = settingsRepository.getAll(type)
-            loadingStates[type] = false
-        }
+    editing?.let { target ->
+        SettingEditorSheet(
+            target = target,
+            viewModel = viewModel,
+            onDismiss = { editing = null }
+        )
     }
 
-    /* ================= UI ================= */
+    var showQuickSettings by remember { mutableStateOf(false) }
+    if (showQuickSettings) {
+        QuickSettingsSheet(
+            onDismissRequest = { showQuickSettings = false },
+            // Keep the list in step with what the sheet just wrote.
+            onApplied = { viewModel.refresh(it) }
+        )
+    }
+
+    // Long-press → "Add to Quick Settings" opens the config sheet for that entry.
+    var pinning by remember { mutableStateOf<Entry?>(null) }
+    pinning?.let { entry ->
+        val added = stringResource(R.string.quick_settings_saved)
+        val context = LocalContext.current
+        QuickSettingConfigSheet(
+            type = entry.type,
+            key = entry.key,
+            currentValue = entry.value,
+            existing = QuickSettingsStore.find(entry.type, entry.key),
+            onSave = {
+                QuickSettingsStore.save(it)
+                pinning = null
+                Toast.makeText(context, added, Toast.LENGTH_SHORT).show()
+            },
+            onDismissRequest = { pinning = null }
+        )
+    }
 
     Scaffold(
         topBar = {
             SearchAppBar(
                 title = {
                     Text(
-                        text = "Settings Editor",
+                        text = stringResource(R.string.settings_editor),
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.SemiBold
                     )
                 },
-                searchLabel = "Search Settings",
-                searchText = query,
-                onSearchTextChange = { query = it },
-                onClearClick = { query = "" },
+                searchLabel = stringResource(R.string.settings_search),
+                searchText = viewModel.query,
+                onSearchTextChange = { viewModel.query = it },
+                onClearClick = { viewModel.query = "" },
                 action = {
-                    IconButton(onClick = { refresh(selectedType) }) {
-                        Icon(Icons.Outlined.Refresh, null)
+                    IconButton(onClick = { showQuickSettings = true }) {
+                        Icon(Icons.Outlined.Bolt, contentDescription = stringResource(R.string.quick_settings))
+                    }
+                    IconButton(onClick = { viewModel.refresh(currentType) }) {
+                        Icon(Icons.Outlined.Refresh, contentDescription = null)
                     }
                 }
             )
         },
         floatingActionButton = {
-            var isAdding by remember { mutableStateOf(false) }
-
-            TableEditor(
-                addTable = true,
-                context = context,
-                showDialog = isAdding,
-                selectedType = selectedType,
-                settingsRepository = settingsRepository,
-                onDismissRequest = { isAdding = false },
-                onRefresh = { refresh(selectedType) }
-            )
-
-            AnimatedVisibility(
-                visible = showFab,
-                enter = fadeIn() + slideInVertically { it },
-                exit = fadeOut() + slideOutVertically { it }
-            ) {
-                FloatingActionButton(onClick = { isAdding = true }) {
-                    Icon(Icons.Filled.Add, null)
+            // Rendered beside the nav pill by FloatingBarFab.
+            FloatingBarFab(visible = showFab) {
+                FloatingActionButton(
+                    shape = CircleShape,
+                    onClick = {
+                        editing = EditTarget(currentType ?: SettingType.GLOBAL, "", "", isNew = true)
+                    }
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.settings_add_title))
                 }
             }
         }
     ) { padding ->
-
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(top = padding.calculateTopPadding())
         ) {
-            val scope = rememberCoroutineScope()
-
-            RoundedTabRow(
-                selectedType = selectedType,
-                onSelect = {
-                    scope.launch {
-                        if (selectedType == it) return@launch
-                        val target = settingTypes.indexOf(it)
-                        if (pagerState.currentPage != target && target >= 0) {
-                            pagerState.animateScrollToPage(target)
-                        }
-                        showFab = true
-                    }
-                }
+            SourceTabs(
+                pages = pages,
+                selected = pagerState.currentPage,
+                // While searching, each tab counts what it would show.
+                count = { type -> viewModel.filtered(type).size },
+                searching = viewModel.isSearching,
+                onSelect = { scope.launch { pagerState.animateScrollToPage(it) } }
             )
 
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
-                key = { page -> settingTypes[page].name }
+                key = { pages[it]?.name ?: "ALL" }
             ) { page ->
+                val type = pages[page]
+                val sourceEmpty =
+                    if (type == null) viewModel.allEntries.isEmpty() else viewModel.entries(type).isEmpty()
 
-                val type = settingTypes[page]
-
-                /* ========== INITIAL LOAD (ONCE PER PAGE) ========== */
-
-                LaunchedEffect(type) {
-                    if (!dataCache.containsKey(type)) {
-                        loadingStates[type] = true
-                        dataCache[type] = settingsRepository.getAll(type)
-                        loadingStates[type] = false
-                        Log.d("SettingsEditor", "loaded $type")
+                SettingsPage(
+                    type = type,
+                    shown = viewModel.filtered(type),
+                    sourceEmpty = sourceEmpty,
+                    query = viewModel.query.trim(),
+                    searching = viewModel.isSearching,
+                    matched = { viewModel.filtered(it).size },
+                    totals = { viewModel.entries(it).size },
+                    loading = viewModel.isLoading(type),
+                    listState = listStates[page],
+                    onRefresh = { viewModel.refresh(type) },
+                    onOpen = { editing = EditTarget(it.type, it.key, it.value, isNew = false) },
+                    onPin = { pinning = it },
+                    envNote = { envNote(viewModel, it) },
+                    onOpenSource = { target ->
+                        scope.launch { pagerState.animateScrollToPage(pages.indexOf(target)) }
                     }
-                }
+                )
+            }
+        }
+    }
+}
 
-                val data = dataCache[type] ?: emptyMap()
-                val loading = loadingStates[type] == true
+@Composable
+private fun SourceTabs(
+    pages: List<SettingType?>,
+    selected: Int,
+    count: (SettingType?) -> Int,
+    searching: Boolean,
+    onSelect: (Int) -> Unit
+) {
+    val rowState = rememberLazyListState()
+    LaunchedEffect(selected) {
+        // Keep the selected tab, and a bit of its left neighbour, on screen.
+        rowState.animateScrollToItem((selected - 1).coerceAtLeast(0))
+    }
 
-                val filtered by remember(data, query) {
-                    derivedStateOf {
-                        data.filter {
-                            it.key.contains(query, true) ||
-                                    it.value?.contains(query, true) == true
-                        }
-                    }
-                }
+    LazyRow(
+        state = rowState,
+        // The search pill above already leaves 8dp; a small top gap keeps the two as one group.
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        itemsIndexed(pages, key = { _, type -> type?.name ?: "ALL" }) { index, type ->
+            val isSelected = index == selected
+            val container by animateColorAsState(
+                if (isSelected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+                label = "sourceTab"
+            )
+            val content = if (isSelected) MaterialTheme.colorScheme.onPrimary
+            else MaterialTheme.colorScheme.onSurfaceVariant
 
-                val listState = scrollStates.getOrPut(type) {
-                    LazyListState()
-                }
-
-                /* ========== FAB AUTO HIDE ========== */
-
-                LaunchedEffect(type) {
-                    var lastIndex = listState.firstVisibleItemIndex
-                    var lastOffset = listState.firstVisibleItemScrollOffset
-
-                    snapshotFlow {
-                        listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-                    }.collect { (i, o) ->
-                        val down = i > lastIndex || (i == lastIndex && o > lastOffset + 4)
-                        val up = i < lastIndex || (i == lastIndex && o < lastOffset - 4)
-
-                        when {
-                            down && showFab -> showFab = false
-                            up && !showFab -> showFab = true
-                        }
-
-                        lastIndex = i
-                        lastOffset = o
-                    }
-                }
-
-                /* ========== CONTENT ========== */
-
-                PullToRefreshBox(
-                    isRefreshing = loading,
-                    onRefresh = { refresh(type) }
+            Surface(
+                onClick = { onSelect(index) },
+                shape = CircleShape,
+                color = container
+            ) {
+                Row(
+                    modifier = Modifier.padding(start = 12.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (loading && data.isEmpty()) {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator()
-                        }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            state = listState
-                        ) {
-                            items(
-                                items = filtered.entries.toList(),
-                                key = { it.key }
-                            ) { entry ->
-                                TableItem(
-                                    context = context,
-                                    key = entry.key,
-                                    value = entry.value ?: "",
-                                    selectedType = type,
-                                    settingsRepository = settingsRepository
-                                ) {
-                                    refresh(type)
-                                }
-                            }
-                        }
+                    Icon(
+                        imageVector = sourceIcon(type),
+                        contentDescription = null,
+                        tint = content,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = stringResource(type?.shortStringId ?: R.string.settings_tab_all),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = content
+                    )
+                    // While searching a 0 is news too (no match there); otherwise it just means
+                    // the source hasn't loaded yet.
+                    val n = count(type)
+                    if (n > 0 || searching) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = n.toString(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = content.copy(alpha = if (n > 0) 0.7f else 0.4f)
+                        )
                     }
                 }
             }
@@ -330,428 +377,906 @@ fun SettingsEditorScreen(
     }
 }
 
+@Composable
+private fun SettingsPage(
+    type: SettingType?,
+    shown: List<Entry>,
+    sourceEmpty: Boolean,
+    query: String,
+    searching: Boolean,
+    matched: (SettingType) -> Int,
+    totals: (SettingType) -> Int,
+    loading: Boolean,
+    listState: LazyListState,
+    onRefresh: () -> Unit,
+    onOpen: (Entry) -> Unit,
+    onPin: (Entry) -> Unit,
+    envNote: @Composable (Entry) -> EnvNote?,
+    onOpenSource: (SettingType) -> Unit
+) {
+    val floatingInset = LocalFloatingBarInset.current
+
+    AxPullToRefreshBox(
+        isRefreshing = loading && !sourceEmpty,
+        onRefresh = onRefresh,
+        topInset = 0.dp
+    ) {
+        if (loading && sourceEmpty) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            return@AxPullToRefreshBox
+        }
+
+        // The "All" page leads with the per-source overview.
+        val headerItems = if (type == null) 1 else 0
+        val bottomPadding = floatingInset + 16.dp
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = bottomPadding)
+        ) {
+            if (type == null) {
+                item(key = "overview", contentType = "overview") {
+                    SourceOverview(
+                        searching = searching,
+                        matched = matched,
+                        totals = totals,
+                        onOpenSource = onOpenSource
+                    )
+                }
+            }
+            if (shown.isEmpty()) {
+                item(key = "empty", contentType = "empty") {
+                    EmptyState(
+                        icon = Icons.Outlined.SearchOff,
+                        title = stringResource(R.string.settings_empty),
+                        subtitle = stringResource(R.string.settings_empty_desc)
+                    )
+                }
+            }
+            items(shown, key = { it.id }, contentType = { "entry" }) { entry ->
+                SettingRow(
+                    entry = entry,
+                    query = query,
+                    showSource = type == null,
+                    envNote = envNote(entry),
+                    onClick = { onOpen(entry) },
+                    onPin = { onPin(entry) }
+                )
+            }
+        }
+
+        // Follows scrollability, not a row count: search results are often short lists that
+        // still overflow the screen.
+        if (shown.isNotEmpty() && (listState.canScrollForward || listState.canScrollBackward)) {
+            FastScrollbar(
+                state = listState,
+                count = shown.size + headerItems,
+                label = { index ->
+                    (shown.getOrNull(index - headerItems) ?: shown.first()).section
+                },
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(top = 4.dp, bottom = bottomPadding)
+            )
+        }
+    }
+}
+
+/** A pill on an env row: what the user's env adds to it, or that it is locked. */
+@Immutable
+private class EnvNote(val text: String, val color: Color)
+
+/**
+ * The note for [entry]: "+1 before · +2 after" for a path list the user adds to, "Locked" for
+ * the server's and the system's own; none for the user's own variables or other sources.
+ */
+@Composable
+private fun envNote(viewModel: SettingsEditorViewModel, entry: Entry): EnvNote? {
+    if (entry.type != SettingType.AXERON_ENV) return null
+    return when (viewModel.envLock(entry.key)) {
+        EnvLock.NONE -> null
+        EnvLock.LOCKED -> EnvNote(
+            stringResource(R.string.settings_env_badge_locked),
+            MaterialTheme.colorScheme.outline
+        )
+        EnvLock.APPEND -> {
+            val (before, after) = viewModel.envAdditions(entry.key)
+            if (before + after == 0) return null
+            val parts = listOfNotNull(
+                before.takeIf { it > 0 }?.let { stringResource(R.string.settings_env_badge_before, it) },
+                after.takeIf { it > 0 }?.let { stringResource(R.string.settings_env_badge_after, it) }
+            )
+            EnvNote(parts.joinToString(" · "), MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+/** Entries per source; while searching, how many of each match. */
+@Composable
+private fun SourceOverview(
+    searching: Boolean,
+    matched: (SettingType) -> Int,
+    totals: (SettingType) -> Int,
+    onOpenSource: (SettingType) -> Unit
+) {
+    Column(
+        modifier = Modifier.padding(bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Column {
+            SectionHeader(stringResource(R.string.settings_overview))
+            Text(
+                text = stringResource(R.string.settings_overview_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+        }
+        OptionTileGrid(items = SettingType.entries, columns = 2) { type, modifier ->
+            val total = totals(type)
+            OptionTile(
+                modifier = modifier,
+                icon = sourceIcon(type),
+                label = stringResource(type.stringId),
+                subtitle = if (searching) {
+                    stringResource(R.string.settings_count_matched, matched(type), total)
+                } else {
+                    stringResource(R.string.settings_count, total)
+                },
+                selected = false,
+                onClick = { onOpenSource(type) }
+            )
+        }
+    }
+}
 
 @Composable
-fun RoundedTabRow(
-    selectedType: SettingsRepository.SettingType,
-    onSelect: (SettingsRepository.SettingType) -> Unit
+private fun SettingRow(
+    entry: Entry,
+    query: String,
+    showSource: Boolean,
+    envNote: EnvNote?,
+    onClick: () -> Unit,
+    onPin: () -> Unit
 ) {
-    val selectedIndex = SettingsRepository.SettingType.entries.indexOf(selectedType)
+    val matchStyle = searchMatchStyle()
+    // Keyed by what is drawn, not by the id: the id is type/key and stays the same when the
+    // value is saved, so a row keyed by it kept showing the old value after a reload.
+    val keyText = remember(entry.keyDisplay, query, matchStyle) {
+        highlightMatches(entry.keyDisplay, query, matchStyle)
+    }
+    val pinned = QuickSettingsStore.find(entry.type, entry.key) != null
+    val haptics = LocalHapticFeedback.current
+    var menu by remember { mutableStateOf(false) }
 
-    SecondaryScrollableTabRow(
-        selectedTabIndex = selectedIndex,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(12.dp)
-            .clip(RoundedCornerShape(50)), // biar seluruh tabrow bulat
-        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-        indicator = { null },
-        edgePadding = 0.dp,
-        divider = {}
-    ) {
-        SettingsRepository.SettingType.entries.forEachIndexed { index, type ->
-            val isSelected = index == selectedIndex
-            val textColor by animateColorAsState(
-                if (isSelected)
-                    MaterialTheme.colorScheme.onPrimary
-                else
-                    MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Tab(
-                selected = isSelected,
-                onClick = { onSelect(type) },
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(
-                        if (isSelected) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.surfaceVariant
-                    )
-                    .padding(horizontal = 8.dp),
-                text = {
+    Box {
+        AxCard(
+            modifier = Modifier
+                .clip(AxCardShape)
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        menu = true
+                    }
+                )
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(verticalAlignment = Alignment.Top) {
+                    if (pinned) {
+                        Icon(
+                            Icons.Outlined.Bolt,
+                            contentDescription = stringResource(R.string.quick_settings),
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .padding(top = 1.dp, end = 4.dp)
+                                .size(16.dp)
+                        )
+                    }
                     Text(
-                        text = stringResource(type.stringId),
-                        color = textColor,
-                        style = MaterialTheme.typography.labelLarge
+                        text = keyText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
                     )
+                    if (envNote != null) {
+                        Spacer(Modifier.width(8.dp))
+                        StatusPill(text = envNote.text, color = envNote.color)
+                    }
+                    if (showSource) {
+                        Spacer(Modifier.width(8.dp))
+                        StatusPill(
+                            text = stringResource(entry.type.shortStringId),
+                            color = sourceColor(entry.type)
+                        )
+                    }
+                }
+                if (entry.value.isEmpty()) {
+                    Text(
+                        text = stringResource(R.string.settings_empty_value),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontStyle = FontStyle.Italic,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                } else {
+                    // Cut off by the line limit (seen at layout) or by the preview length.
+                    var clipped by remember(entry.valuePreview) { mutableStateOf(entry.isPreviewTruncated) }
+                    val valueText = remember(entry.valuePreview, query, matchStyle) {
+                        highlightMatches(entry.valuePreview, query, matchStyle)
+                    }
+                    Text(
+                        text = valueText,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                        onTextLayout = { if (it.hasVisualOverflow) clipped = true }
+                    )
+                    if (clipped) {
+                        LongValueHint(
+                            text = stringResource(
+                                R.string.settings_value_truncated,
+                                entry.value.lineCount(),
+                                entry.value.length
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        val context = LocalContext.current
+        val keyCopied = stringResource(R.string.key_copied)
+        val valueCopied = stringResource(R.string.value_copied)
+        AxDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            AxDropdownHeader(entry.key, monospace = true)
+            AxDropdownItem(
+                text = stringResource(if (pinned) R.string.quick_settings_edit else R.string.quick_settings_add),
+                icon = Icons.Outlined.Bolt,
+                onClick = {
+                    menu = false
+                    onPin()
+                }
+            )
+            AxDropdownDivider()
+            AxDropdownItem(
+                text = stringResource(R.string.settings_copy_key),
+                icon = Icons.Outlined.Key,
+                onClick = {
+                    menu = false
+                    if (ClipboardUtil.put(context, entry.key)) {
+                        Toast.makeText(context, keyCopied, Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
+            AxDropdownItem(
+                text = stringResource(R.string.settings_copy_value),
+                icon = Icons.Outlined.ContentCopy,
+                enabled = entry.value.isNotEmpty(),
+                onClick = {
+                    menu = false
+                    if (ClipboardUtil.put(context, entry.value)) {
+                        Toast.makeText(context, valueCopied, Toast.LENGTH_SHORT).show()
+                    }
                 }
             )
         }
     }
 }
 
-
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun TableItem(
-    context: Context,
-    key: String,
-    value: String,
-    selectedType: SettingsRepository.SettingType,
-    settingsRepository: SettingsRepository,
-    onRefresh: () -> Unit
+private fun SettingEditorSheet(
+    target: EditTarget,
+    viewModel: SettingsEditorViewModel,
+    onDismiss: () -> Unit
 ) {
-    var isEditing by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val confirmDialog = rememberConfirmDialog()
 
-    TableEditor(
-        context = context,
-        showDialog = isEditing,
-        key = key,
-        value = value,
-        selectedType = selectedType,
-        settingsRepository = settingsRepository,
-        onDismissRequest = {
-            isEditing = false
-        },
-        onRefresh = onRefresh
-    )
+    var type by remember(target) { mutableStateOf(target.type) }
+    var key by remember(target) { mutableStateOf(target.key) }
+    // An env key is edited as the user's own value, not the merged one; the server's and the
+    // system's variables are locked, and their path lists only take additions (EnvLock).
+    val isEnv = type == SettingType.AXERON_ENV
+    val envLock = if (isEnv) viewModel.envLock(key.trim()) else EnvLock.NONE
+    val initialValue = remember(target) {
+        if (target.type == SettingType.AXERON_ENV && !target.isNew) viewModel.envEditValue(target.key)
+        else target.value
+    }
+    // TextFieldState: its field exposes the scroll state the long-value indicator needs.
+    val valueState = remember(target) { TextFieldState(initialValue) }
+    // A path list is edited as the user's entries before and after `$KEY`, which itself can't
+    // be removed: it is not in either field.
+    val appendParts = remember(target) { viewModel.splitAppend(target.key, initialValue) }
+    var appendBefore by remember(target) { mutableStateOf(appendParts.first) }
+    var appendAfter by remember(target) { mutableStateOf(appendParts.second) }
+    val value = if (envLock == EnvLock.APPEND) {
+        viewModel.composeAppend(key.trim(), appendBefore to appendAfter)
+    } else {
+        valueState.text.toString()
+    }
+    // A new env entry for a key the user's env already holds, or a path list, starts from what
+    // is saved for it: started empty, its saved entries didn't show, and saving dropped them.
+    // Only then, so a value typed before an unrelated key isn't cleared.
+    val envKey = key.trim()
+    LaunchedEffect(envKey, envLock) {
+        if (!target.isNew || !isEnv) return@LaunchedEffect
+        if (!viewModel.hasUserEnv(envKey) && envLock != EnvLock.APPEND) return@LaunchedEffect
+        val saved = viewModel.envEditValue(envKey)
+        valueState.setTextAndPlaceCursorAtEnd(saved)
+        val (before, after) = viewModel.splitAppend(envKey, saved)
+        appendBefore = before
+        appendAfter = after
+    }
+    var busy by remember { mutableStateOf(false) }
 
-    ElevatedCard(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-        onClick = {
-            isEditing = true
-        },
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            SmartWrappedText(
-                text = key,
-                style = MaterialTheme.typography.titleSmall.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold
-                ),
-            )
-            Spacer(Modifier.height(4.dp))
-            SmartWrappedText(
-                text = value.ifBlank { "(null)" },
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontFamily = FontFamily.Monospace
-                ),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+    // The list's search query: highlight it in the key and step through it in the value.
+    val query = viewModel.query.trim()
+    val matchStyle = searchMatchStyle()
+    val valueMatches = remember(value, query) { occurrences(value, query) }
+    var currentMatch by remember(target, query) { mutableIntStateOf(-1) }
+    val valueFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    /** Selects match [index] in the value field, which highlights it and scrolls it into view. */
+    fun selectMatch(index: Int) {
+        if (valueMatches.isEmpty()) return
+        currentMatch = Math.floorMod(index, valueMatches.size)
+        val start = valueMatches[currentMatch]
+        valueState.edit { selection = TextRange(start, start + query.length) }
+        scope.launch {
+            // Selection only shows (and scrolls) in a focused field; keep the keyboard down.
+            valueFocus.requestFocus()
+            withFrameNanos { }
+            keyboard?.hide()
         }
     }
 
-}
+    val modified = value != initialValue
+    val canSave = !busy && key.isNotBlank() && (target.isNew || modified) && envLock != EnvLock.LOCKED
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun TableEditor(
-    addTable: Boolean = false,
-    context: Context,
-    showDialog: Boolean,
-    key: String = "",
-    value: String = "",
-    selectedType: SettingsRepository.SettingType,
-    settingsRepository: SettingsRepository,
-    onDismissRequest: () -> Unit,
-    onRefresh: () -> Unit = {}
-) {
-    var newKey by remember { mutableStateOf(key) }
-    var newValue by remember { mutableStateOf(value) }
+    val keyCopied = stringResource(R.string.key_copied)
+    val valueCopied = stringResource(R.string.value_copied)
+    val saved = stringResource(R.string.settings_saved)
+    val removed = stringResource(R.string.settings_removed)
+    val saveFailed = stringResource(R.string.failed_to_save_settings)
+    val removeFailed = stringResource(R.string.failed_to_remove_settings)
+    val removeTitle = stringResource(R.string.ask_remove_settings)
+    val removeMessage = stringResource(R.string.ask_remove_settings_msg)
+    val removeLabel = stringResource(R.string.remove)
+    val cancelLabel = stringResource(R.string.cancel)
 
-    LaunchedEffect(key, value, showDialog) {
-        newKey = key
-        newValue = value
+    fun toast(text: String) = Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+
+    // Runs a write; the sheet stays open (and undismissable) until it finishes.
+    fun write(done: String, failed: String, block: suspend () -> Boolean) {
+        scope.launch {
+            busy = true
+            val ok = block()
+            busy = false
+            if (ok) {
+                toast(done)
+                onDismiss()
+            } else {
+                toast(viewModel.lastError?.let { "$failed: $it" } ?: failed)
+            }
+        }
     }
 
-    if (showDialog) {
-        ModalBottomSheet(
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-            onDismissRequest = {
-                onDismissRequest()
+    AxOptionsSheet(
+        title = stringResource(if (target.isNew) R.string.settings_add_title else R.string.settings_edit_title),
+        description = stringResource(type.stringId),
+        onDismissRequest = { if (!busy) onDismiss() },
+        // An env entry has something to delete only in the user's own env.
+        headerAction = if (target.isNew || (isEnv && !viewModel.hasUserEnv(target.key))) null else {
+            {
+                IconButton(
+                    enabled = !busy,
+                    onClick = {
+                        scope.launch {
+                            val result = confirmDialog.awaitConfirm(
+                                removeTitle,
+                                content = removeMessage,
+                                confirm = removeLabel,
+                                dismiss = cancelLabel
+                            )
+                            if (result == ConfirmResult.Confirmed) {
+                                write(removed, removeFailed) { viewModel.delete(type, key) }
+                            }
+                        }
+                    }
+                ) {
+                    Icon(
+                        Icons.Outlined.Delete,
+                        contentDescription = removeLabel,
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+    ) {
+        if (target.isNew) {
+            OptionsSectionHeader(stringResource(R.string.settings_source))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                SettingType.entries.forEach { option ->
+                    FilterChip(
+                        selected = type == option,
+                        onClick = { type = option },
+                        enabled = !busy,
+                        label = { Text(stringResource(option.shortStringId)) },
+                        leadingIcon = {
+                            Icon(sourceIcon(option), contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                    )
+                }
+            }
+            OutlinedTextField(
+                value = key,
+                onValueChange = { key = it },
+                label = { Text(stringResource(R.string.settings_key)) },
+                singleLine = true,
+                enabled = !busy,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                shape = AxPanelShape,
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            // The key of an existing entry is fixed: show it with a copy action.
+            Surface(shape = AxPanelShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Row(
+                    modifier = Modifier.padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.settings_key),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = remember(key, query, matchStyle) {
+                                highlightMatches(key, query, matchStyle)
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    IconButton(onClick = { if (ClipboardUtil.put(context, key)) toast(keyCopied) }) {
+                        Icon(
+                            Icons.Outlined.ContentCopy,
+                            contentDescription = stringResource(R.string.settings_copy_key),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Scrolls inside past its visible lines, with an indicator; the hint below says how much.
+        val valueScroll = rememberScrollState()
+        val scrollsInside = envLock == EnvLock.NONE && valueScroll.maxValue > 0
+        when (envLock) {
+            EnvLock.APPEND -> EnvAppendEditor(
+                key = key.trim(),
+                defaultValue = viewModel.envDefaultValue(key.trim()),
+                before = appendBefore,
+                onBefore = { appendBefore = it },
+                after = appendAfter,
+                onAfter = { appendAfter = it },
+                added = viewModel.appendCount(key.trim(), value),
+                modified = !target.isNew && modified,
+                enabled = !busy
+            )
+
+            EnvLock.LOCKED -> EnvLockedValue(value = viewModel.envDefaultValue(key.trim()))
+
+            EnvLock.NONE -> ScrollableTextField(
+            state = valueState,
+            label = stringResource(R.string.settings_value),
+            enabled = !busy,
+            minLines = 3,
+            maxLines = VALUE_FIELD_MAX_LINES,
+            scrollState = valueScroll,
+            trailingIcon = {
+                IconButton(
+                    enabled = value.isNotEmpty(),
+                    onClick = { if (ClipboardUtil.put(context, value)) toast(valueCopied) }
+                ) {
+                    Icon(
+                        Icons.Outlined.ContentCopy,
+                        contentDescription = stringResource(R.string.settings_copy_value),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             },
-            dragHandle = null
+            fieldModifier = Modifier.focusRequester(valueFocus),
+            modifier = Modifier.fillMaxWidth()
+        )
+        }
+        if (envLock == EnvLock.NONE && valueMatches.isNotEmpty()) {
+            MatchNavigator(
+                query = query,
+                current = currentMatch,
+                total = valueMatches.size,
+                enabled = !busy,
+                onPrevious = { selectMatch(if (currentMatch < 0) valueMatches.lastIndex else currentMatch - 1) },
+                onNext = { selectMatch(currentMatch + 1) }
+            )
+        }
+        if (scrollsInside || (envLock == EnvLock.NONE && !target.isNew && modified)) {
+            Column(
+                modifier = Modifier.padding(horizontal = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                if (scrollsInside) {
+                    LongValueHint(
+                        text = stringResource(
+                            R.string.settings_value_scroll_hint,
+                            value.lineCount(),
+                            value.length
+                        )
+                    )
+                }
+                if (!target.isNew && modified) {
+                    Text(
+                        text = stringResource(R.string.settings_value_modified),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val canReset = !target.isNew && modified
+            OutlinedButton(
+                modifier = Modifier.weight(1f),
+                enabled = !busy,
+                onClick = {
+                    when {
+                        !canReset -> onDismiss()
+                        envLock == EnvLock.APPEND -> {
+                            appendBefore = appendParts.first
+                            appendAfter = appendParts.second
+                        }
+                        else -> valueState.setTextAndPlaceCursorAtEnd(initialValue)
+                    }
+                }
+            ) {
+                Text(stringResource(if (canReset) R.string.settings_reset_value else R.string.cancel))
+            }
+            Button(
+                modifier = Modifier.weight(1f),
+                enabled = canSave,
+                onClick = { write(saved, saveFailed) { viewModel.put(type, key.trim(), value) } }
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                } else {
+                    Icon(Icons.Outlined.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.save))
+                }
+            }
+        }
+    }
+}
+
+/** "Match 2 of 5 for “query”" with previous / next, for stepping through the value field. */
+@Composable
+private fun MatchNavigator(
+    query: String,
+    current: Int,
+    total: Int,
+    enabled: Boolean,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
+) {
+    Surface(shape = AxPanelShape, color = MaterialTheme.colorScheme.tertiaryContainer) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 12.dp, end = 2.dp)
         ) {
+            Icon(
+                Icons.Outlined.Search,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = if (current < 0) {
+                    pluralStringResource(R.plurals.settings_value_matches, total, total, query)
+                } else {
+                    stringResource(R.string.settings_value_match_position, current + 1, total, query)
+                },
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onPrevious, enabled = enabled) {
+                Icon(
+                    Icons.Outlined.KeyboardArrowUp,
+                    contentDescription = stringResource(R.string.terminal_search_previous),
+                    tint = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+            }
+            IconButton(onClick = onNext, enabled = enabled) {
+                Icon(
+                    Icons.Outlined.KeyboardArrowDown,
+                    contentDescription = stringResource(R.string.terminal_search_next),
+                    tint = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A path list of the default env (PATH, LD_LIBRARY_PATH): the user's entries before and after
+ * `$KEY`, and between them `$KEY` itself with what it stands for, kept and not editable.
+ */
+@Composable
+private fun EnvAppendEditor(
+    key: String,
+    defaultValue: String,
+    before: String,
+    onBefore: (String) -> Unit,
+    after: String,
+    onAfter: (String) -> Unit,
+    added: Int,
+    modified: Boolean,
+    enabled: Boolean
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        EnvAppendField(
+            label = stringResource(R.string.settings_env_before, key),
+            hint = stringResource(R.string.settings_env_before_hint),
+            value = before,
+            onValueChange = onBefore,
+            enabled = enabled
+        )
+        Surface(shape = AxPanelShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp)
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    if (!addTable) {
-                        val confirmDialog = rememberConfirmDialog()
-                        val scope = rememberCoroutineScope()
-
-                        val title = stringResource(R.string.ask_remove_settings)
-                        val content = stringResource(R.string.ask_remove_settings_msg)
-                        val confirm = stringResource(R.string.remove)
-                        val dismiss = stringResource(R.string.cancel)
-                        val failed = stringResource(R.string.failed_to_remove_settings)
-
-                        FilledTonalButton(
-                            modifier = Modifier.defaultMinSize(52.dp, 32.dp),
-                            onClick = {
-                                scope.launch {
-                                    val confirmResult = confirmDialog.awaitConfirm(
-                                        title,
-                                        content = content,
-                                        confirm = confirm,
-                                        dismiss = dismiss
-                                    )
-                                    if (confirmResult == ConfirmResult.Confirmed) {
-                                        if (settingsRepository.deleteValue(selectedType, newKey)) {
-                                            onRefresh()
-                                        } else {
-                                            Toast.makeText(
-                                                context,
-                                                failed,
-                                                Toast.LENGTH_SHORT
-                                            )
-                                                .show()
-                                        }
-                                        onDismissRequest()
-                                    }
-                                }
-
-                            },
-                            contentPadding = ButtonDefaults.TextButtonContentPadding,
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer
-                            )
-                        ) {
-                            Icon(
-                                modifier = Modifier.size(20.dp),
-                                imageVector = Icons.Outlined.Delete,
-                                contentDescription = null
-                            )
-//                            Text(
-//                                modifier = Modifier.padding(start = 7.dp),
-//                                text = "Remove",
-//                                fontFamily = MaterialTheme.typography.labelMedium.fontFamily,
-//                                fontSize = MaterialTheme.typography.labelMedium.fontSize
-//                            )
-                        }
-                    }
-
-                    Spacer(Modifier.weight(1f))
-
-                    val copied = stringResource(R.string.key_copied)
-
-                    FilledTonalButton(
-                        modifier = Modifier.defaultMinSize(52.dp, 32.dp),
-                        enabled = newKey.isNotEmpty(),
-                        onClick = {
-                            if (ClipboardUtil.put(context, newKey)) {
-                                Toast.makeText(context, copied, Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        contentPadding = ButtonDefaults.TextButtonContentPadding
-                    ) {
-                        Icon(
-                            modifier = Modifier.size(18.dp),
-                            imageVector = Icons.Outlined.ContentCopy,
-                            contentDescription = null
-                        )
-                        VerticalDivider(
-                            modifier = Modifier
-                                .height(12.dp)
-                                .padding(horizontal = 4.dp),
-                            thickness = 1.dp,
-                            color = MaterialTheme.colorScheme.surfaceContainerHighest
-                        )
-                        Icon(
-                            modifier = Modifier.size(18.dp),
-                            imageVector = Icons.Outlined.Key,
-                            contentDescription = null
-                        )
-//                        Text(
-//                            modifier = Modifier.padding(start = 7.dp),
-//                            text = "Key",
-//                            fontFamily = MaterialTheme.typography.labelMedium.fontFamily,
-//                            fontSize = MaterialTheme.typography.labelMedium.fontSize
-//                        )
-                    }
-
-                    Spacer(Modifier.width(10.dp))
-
-                    val valCopied = stringResource(R.string.value_copied)
-
-                    FilledTonalButton(
-                        modifier = Modifier.defaultMinSize(52.dp, 32.dp),
-                        enabled = newValue.isNotEmpty(),
-                        onClick = {
-                            if (ClipboardUtil.put(context, newValue)) {
-                                Toast.makeText(context, valCopied, Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        contentPadding = ButtonDefaults.TextButtonContentPadding
-                    ) {
-                        Icon(
-                            modifier = Modifier.size(18.dp),
-                            imageVector = Icons.Outlined.ContentCopy,
-                            contentDescription = null
-                        )
-                        VerticalDivider(
-                            modifier = Modifier
-                                .height(12.dp)
-                                .padding(horizontal = 4.dp),
-                            thickness = 1.dp,
-                            color = MaterialTheme.colorScheme.surfaceContainerHighest
-                        )
-                        Icon(
-                            modifier = Modifier.size(18.dp),
-                            imageVector = Icons.AutoMirrored.Outlined.TextSnippet,
-                            contentDescription = null
-                        )
-//                        Text(
-//                            modifier = Modifier.padding(start = 7.dp),
-//                            text = "Value",
-//                            fontFamily = MaterialTheme.typography.labelMedium.fontFamily,
-//                            fontSize = MaterialTheme.typography.labelMedium.fontSize
-//                        )
-                    }
-
-                    Spacer(Modifier.width(10.dp))
-
-                    val failed = stringResource(R.string.failed_to_save_settings)
-
-                    FilledTonalButton(
-                        modifier = Modifier.defaultMinSize(52.dp, 32.dp),
-                        enabled = newValue != value && newKey.isNotEmpty(),
-                        onClick = {
-                            if (settingsRepository.putValue(selectedType, newKey, newValue)) {
-                                onRefresh()
-                            } else {
-                                Toast.makeText(context, failed, Toast.LENGTH_SHORT).show()
-                            }
-                            onDismissRequest()
-                        },
-                        contentPadding = ButtonDefaults.TextButtonContentPadding
-                    ) {
-                        Icon(
-                            modifier = Modifier.size(20.dp),
-                            imageVector = Icons.Outlined.Save,
-                            contentDescription = null
-                        )
-                        Text(
-                            modifier = Modifier.padding(start = 7.dp),
-                            text = stringResource(R.string.save),
-                            fontFamily = MaterialTheme.typography.labelMedium.fontFamily,
-                            fontSize = MaterialTheme.typography.labelMedium.fontSize
-                        )
-                    }
-                }
-
-                HorizontalDivider(
-                    Modifier.padding(vertical = 10.dp),
-                    DividerDefaults.Thickness,
-                    MaterialTheme.colorScheme.surfaceContainerHighest
-                )
-
-                if (addTable) {
-                    TextField(
-                        modifier = Modifier.fillMaxWidth(),
-                        value = newKey.ifBlank { "" },
-                        onValueChange = {
-                            newKey = it
-                        },
-                        label = {
-                            Text(stringResource(R.string.add_key_settings))
-                        },
-                        textStyle = MaterialTheme.typography.labelLarge.copy(
-                            fontFamily = FontFamily.Monospace,
-                        ),
-                        singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedIndicatorColor = Color.Transparent,   // garis saat fokus
-                            unfocusedIndicatorColor = Color.Transparent, // garis saat tidak fokus
-                            disabledIndicatorColor = Color.Transparent,   // garis saat disabled
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                            disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Done),
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.Lock,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
                     )
-                } else {
-                    SmartWrappedText(
-                        modifier = Modifier.padding(horizontal = 8.dp),
-                        text = newKey,
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold
-                        ),
-                    )
-                }
-
-                Spacer(Modifier.height(10.dp))
-
-                TextField(
-                    modifier = Modifier.fillMaxWidth(),
-                    value = newValue.ifBlank { "" },
-                    onValueChange = {
-                        newValue = it
-                    },
-                    label = {
-                        if (addTable) {
-                            Text(stringResource(R.string.add_value_settings))
-                        } else {
-                            Text(stringResource(R.string.edit_value_settings))
-                        }
-                    },
-                    textStyle = MaterialTheme.typography.labelLarge.copy(
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "\$$key",
+                        style = MaterialTheme.typography.bodyMedium,
                         fontFamily = FontFamily.Monospace,
-                    ),
-                    maxLines = 20,
-                    singleLine = false,
-                    colors = TextFieldDefaults.colors(
-                        focusedIndicatorColor = Color.Transparent,   // garis saat fokus
-                        unfocusedIndicatorColor = Color.Transparent, // garis saat tidak fokus
-                        disabledIndicatorColor = Color.Transparent,   // garis saat disabled
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                        disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-                        unfocusedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Done),
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = stringResource(R.string.settings_env_ref_kept),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    text = stringResource(R.string.settings_env_ref_desc, key),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-
-                Spacer(Modifier.height(20.dp))
+                // One entry per line: a PATH is long, and its order is what matters.
+                EnvValueText(defaultValue.split(':').filter { it.isNotEmpty() }.joinToString("\n"))
+            }
+        }
+        EnvAppendField(
+            label = stringResource(R.string.settings_env_after, key),
+            hint = stringResource(R.string.settings_env_after_hint),
+            value = after,
+            onValueChange = onAfter,
+            enabled = enabled
+        )
+        Column(
+            modifier = Modifier.padding(horizontal = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = if (added == 0) stringResource(R.string.settings_env_nothing_added, key)
+                else pluralStringResource(R.plurals.settings_env_added, added, added),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = if (added == 0) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.primary
+            )
+            if (modified) {
+                Text(
+                    text = stringResource(R.string.settings_value_modified),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
             }
         }
     }
 }
 
 @Composable
-fun SmartWrappedText(
-    text: String,
-    modifier: Modifier = Modifier,
-    color: Color = MaterialTheme.colorScheme.onSurface,
-    style: TextStyle = MaterialTheme.typography.bodyMedium,
-    wrapSymbols: String = ".,=_()[]{}<>:;+-*/|\\"
+private fun EnvAppendField(
+    label: String,
+    hint: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean
 ) {
-    // Buat regex untuk simbol wrap
-    val regex = remember(wrapSymbols) {
-        Regex("(?<=[${Regex.escape(wrapSymbols)}])")
-    }
-
-    // Sisipkan zero-width space setelah simbol
-    val formatted = remember(text) {
-        text.replace(regex, "\u200B")
-    }
-
-    Text(
-        text = formatted,
-        color = color,
-        style = style.copy(fontFamily = FontFamily.Monospace),
-        modifier = modifier,
-        softWrap = true,
-        overflow = TextOverflow.Clip
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        supportingText = { Text(hint) },
+        enabled = enabled,
+        textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+        shape = AxPanelShape,
+        modifier = Modifier.fillMaxWidth()
     )
 }
 
+/** A locked env variable's value: shown and selectable, not editable. */
+@Composable
+private fun EnvLockedValue(value: String) {
+    Surface(shape = AxPanelShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.Lock,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = stringResource(R.string.settings_value),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            EnvValueText(value.ifEmpty { stringResource(R.string.settings_empty_value) })
+            Text(
+                text = stringResource(R.string.settings_env_locked),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** A read-only value in monospace, selectable, scrolling inside past a few lines. */
+@Composable
+private fun EnvValueText(text: String) {
+    SelectionContainer {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier
+                .heightIn(max = 160.dp)
+                .containScroll()
+                .verticalScroll(rememberScrollState())
+        )
+    }
+}
+
+/** "There is more than you see" note for long values, in the list and in the editor. */
+@Composable
+private fun LongValueHint(text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            Icons.Outlined.UnfoldMore,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(14.dp)
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
+private fun String.lineCount(): Int = count { it == '\n' } + 1
+
+@Composable
+private fun searchMatchStyle() = SpanStyle(
+    background = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f),
+    fontWeight = FontWeight.Bold
+)
+
+/**
+ * [display] with each occurrence of [query] (ignoring case) styled. Display text carries
+ * zero-width break points after symbols; matching skips them so "a.b" still finds "a.b".
+ */
+private fun highlightMatches(display: String, query: String, style: SpanStyle): AnnotatedString {
+    if (query.isEmpty()) return AnnotatedString(display)
+    val toDisplay = IntArray(display.length)
+    val plain = buildString {
+        display.forEachIndexed { i, c ->
+            if (c != ZWSP) {
+                toDisplay[length] = i
+                append(c)
+            }
+        }
+    }
+    var i = plain.indexOf(query, ignoreCase = true)
+    if (i < 0) return AnnotatedString(display)
+    return buildAnnotatedString {
+        append(display)
+        while (i >= 0) {
+            addStyle(style, toDisplay[i], toDisplay[i + query.length - 1] + 1)
+            i = plain.indexOf(query, i + query.length, ignoreCase = true)
+        }
+    }
+}
+
+/** Start of every occurrence of [query] (ignoring case) in [text]. */
+private fun occurrences(text: String, query: String): List<Int> {
+    if (query.isEmpty()) return emptyList()
+    val found = ArrayList<Int>()
+    var i = text.indexOf(query, ignoreCase = true)
+    while (i >= 0) {
+        found.add(i)
+        i = text.indexOf(query, i + query.length, ignoreCase = true)
+    }
+    return found
+}
+
+private const val ZWSP = '​'
+
+internal fun sourceIcon(type: SettingType?): ImageVector = when (type) {
+    null -> Icons.Outlined.Apps
+    SettingType.GLOBAL -> Icons.Outlined.Public
+    SettingType.SECURE -> Icons.Outlined.Shield
+    SettingType.SYSTEM -> Icons.Outlined.Settings
+    SettingType.ANDROID_PROP -> Icons.Outlined.Android
+    SettingType.AXERON_ENV -> Icons.Outlined.Terminal
+}
+
+@Composable
+internal fun sourceColor(type: SettingType): Color = when (type) {
+    SettingType.GLOBAL, SettingType.ANDROID_PROP -> MaterialTheme.colorScheme.primary
+    SettingType.SECURE, SettingType.AXERON_ENV -> MaterialTheme.colorScheme.tertiary
+    SettingType.SYSTEM -> MaterialTheme.colorScheme.secondary
+}

@@ -1,8 +1,11 @@
 package frb.axeron.manager
 
-import android.os.Build
+import android.os.Binder
+import frb.axeron.manager.adb.OtgTargetMonitor
 import android.os.Bundle
-import androidx.core.os.bundleOf
+import android.os.Process
+import frb.axeron.api.core.AxeronSettings
+import androidx.core.os.BundleCompat
 import frb.axeron.api.Axeron
 import frb.axeron.ktx.workerHandler
 import frb.axeron.provider.AxeronProvider
@@ -19,10 +22,20 @@ class AxManagerProvider : AxeronProvider() {
     companion object {
         private const val EXTRA_BINDER = "moe.shizuku.privileged.api.intent.extra.BINDER"
         private const val METHOD_SEND_USER_SERVICE = "sendUserService"
+
+        /**
+         * Asked over `adb shell content call` by a phone doing OTG activation on this one, so
+         * TCP/IP follows *this* phone's TCP mode setting. Keys are parsed by OtgActivator.
+         */
+        const val METHOD_GET_TCP_CONFIG = "getTcpConfig"
+        const val KEY_TCP_MODE = "tcp_mode"
+        const val KEY_TCP_PORT = "tcp_port"
+
         private val LOGGER = Logger("AxManagerProvider")
     }
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
+        if (method == METHOD_GET_TCP_CONFIG) return tcpConfig()
         if (extras == null) return null
 
         return if (method == METHOD_SEND_USER_SERVICE) {
@@ -32,13 +45,8 @@ class AxManagerProvider : AxeronProvider() {
 
                 val token = extras.getString(USER_SERVICE_ARG_TOKEN) ?: return null
                 val pgid = extras.getInt(USER_SERVICE_ARG_PGID)
-                val binder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    extras.getParcelable(EXTRA_BINDER,  BinderContainer::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    extras.getParcelable(EXTRA_BINDER)
-                }?.binder ?: return null
-//                val binder = extras.getParcelableCompat(EXTRA_BINDER, BinderContainer::class.java)?.binder ?: return null
+                val binder = BundleCompat.getParcelable(extras, EXTRA_BINDER, BinderContainer::class.java)
+                    ?.binder ?: return null
 
                 val countDownLatch = CountDownLatch(1)
                 var reply: Bundle? = Bundle()
@@ -47,13 +55,12 @@ class AxManagerProvider : AxeronProvider() {
 
                     override fun onBinderReceived() {
                         try {
-                            Axeron.attachUserService(binder, bundleOf(
-                                USER_SERVICE_ARG_TOKEN to token,
-                                USER_SERVICE_ARG_PGID to pgid
-                            )
-                            )
+                            Axeron.attachUserService(binder, Bundle().apply {
+                                putString(USER_SERVICE_ARG_TOKEN, token)
+                                putInt(USER_SERVICE_ARG_PGID, pgid)
+                            })
                             reply!!.putParcelable(EXTRA_BINDER,
-                                BinderContainer(Axeron.getShizukuService().asBinder())
+                                BinderContainer(checkNotNull(Axeron.getShizukuService()) { "No Shizuku service" }.asBinder())
                             )
                         } catch (e: Throwable) {
                             LOGGER.e(e, "attachUserService $token")
@@ -81,6 +88,23 @@ class AxManagerProvider : AxeronProvider() {
             }
         } else {
             super.call(method, arg, extras)
+        }
+    }
+
+    /** Only adb's shell (or root) gets an answer; nothing secret, but no reason to widen it. */
+    private fun tcpConfig(): Bundle? {
+        val uid = Binder.getCallingUid()
+        if (uid != Process.SHELL_UID && uid != Process.ROOT_UID) {
+            OtgTargetMonitor.note("TCP mode was asked by uid $uid — refused (only adb shell may ask)")
+            return null
+        }
+        OtgTargetMonitor.note(
+            "The other phone read this phone's TCP mode: " +
+                    "${if (AxeronSettings.getTcpMode()) "on" else "off"}, port ${AxeronSettings.getTcpPort()}"
+        )
+        return Bundle().apply {
+            putBoolean(KEY_TCP_MODE, AxeronSettings.getTcpMode())
+            putInt(KEY_TCP_PORT, AxeronSettings.getTcpPort())
         }
     }
 }

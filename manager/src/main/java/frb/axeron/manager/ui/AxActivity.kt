@@ -13,6 +13,8 @@ import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -20,20 +22,32 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -44,7 +58,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.pm.ShortcutInfoCompat
@@ -59,7 +77,6 @@ import com.ramcosta.composedestinations.DestinationsNavHost
 import com.ramcosta.composedestinations.animations.NavHostAnimatedDestinationStyle
 import com.ramcosta.composedestinations.generated.NavGraphs
 import com.ramcosta.composedestinations.generated.destinations.ActivateScreenDestination
-import com.ramcosta.composedestinations.generated.destinations.ExecutePluginActionScreenDestination
 import com.ramcosta.composedestinations.generated.destinations.FlashScreenDestination
 import com.ramcosta.composedestinations.generated.destinations.HomeScreenDestination
 import com.ramcosta.composedestinations.generated.destinations.QuickShellScreenDestination
@@ -69,9 +86,14 @@ import com.ramcosta.composedestinations.utils.isRouteOnBackStackAsState
 import com.ramcosta.composedestinations.utils.rememberDestinationsNavigator
 import frb.axeron.api.AxeronInfo
 import frb.axeron.manager.R
+import frb.axeron.manager.ui.component.FloatingBarFabHost
+import frb.axeron.manager.ui.component.bottomBarFadeBrush
+import frb.axeron.manager.ui.component.FloatingBarFabSlot
+import frb.axeron.manager.ui.component.LocalFloatingBarFabHost
 import frb.axeron.manager.ui.navigation.BottomBarDestination
 import frb.axeron.manager.ui.screen.FlashIt
 import frb.axeron.manager.ui.theme.AxManagerTheme
+import frb.axeron.manager.ui.util.LocalFloatingBarInset
 import frb.axeron.manager.ui.util.LocalSnackbarHost
 import frb.axeron.manager.ui.util.LocaleHelper
 import frb.axeron.manager.ui.viewmodel.ActivateViewModel
@@ -81,6 +103,7 @@ import frb.axeron.manager.ui.viewmodel.PrivilegeViewModel
 import frb.axeron.manager.ui.viewmodel.SettingsViewModel
 import frb.axeron.manager.ui.viewmodel.ViewModelGlobal
 import frb.axeron.server.PluginInstaller
+import kotlinx.coroutines.delay
 
 class AxActivity : ComponentActivity() {
 
@@ -117,7 +140,9 @@ class AxActivity : ComponentActivity() {
 
         ShortcutManagerCompat.pushDynamicShortcut(this@AxActivity, shortcut)
 
-        intentState = intent
+        // Only a fresh start: after a recreate (rotation, theme change) the intent was already
+        // handled, and handling a VIEW again would flash the same zip a second time.
+        if (savedInstanceState == null) intentState = intent
 
         setContent {
             AxManagerTheme {
@@ -165,17 +190,20 @@ class AxActivity : ComponentActivity() {
                 }
 
                 Intent.ACTION_VIEW -> {
-                    if (intentState!!.data?.scheme == "content") {
+                    // The intent being handled: with singleTask a VIEW often arrives through
+                    // onNewIntent, while `intent` is still the one that first created the activity.
+                    val view = intentState!!
+                    if (view.data?.scheme == "content") {
                         zipUri =
-                            intent.data?.let { uri ->
+                            view.data?.let { uri ->
                                 arrayListOf(PluginInstaller(uri))
                             } ?: run {
                                 val uris: ArrayList<Uri>? =
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                        intent.getParcelableArrayListExtra("uris", Uri::class.java)
+                                        view.getParcelableArrayListExtra("uris", Uri::class.java)
                                     } else {
                                         @Suppress("DEPRECATION")
-                                        intent.getParcelableArrayListExtra("uris")
+                                        view.getParcelableArrayListExtra("uris")
                                     }
 
                                 uris
@@ -198,10 +226,18 @@ class AxActivity : ComponentActivity() {
             intentState = null
         }
 
-        LaunchedEffect(axeronInfo) {
+        // Reload only when the server process changes, not on every AxeronInfo emission.
+        val serverProcess = axeronInfo.serverInfo.uid to axeronInfo.serverInfo.pid
+        LaunchedEffect(serverProcess) {
             if (axeronInfo.isRunning()) {
+                // pluginViewModel is prioritized because of BottomBar badge
                 pluginViewModel.fetchModuleList()
+
+                // Stagger other loads to avoid UI stutter during startup/navigation
+                delay(500)
                 appsViewModel.loadInstalledApps()
+
+                delay(500)
                 privilegeViewModel.loadInstalledApps()
             }
         }
@@ -218,10 +254,13 @@ class AxActivity : ComponentActivity() {
 
         val showBottomBar = when (currentDestination?.route) {
             ActivateScreenDestination.route -> false // Hide for Activate
-            FlashScreenDestination.route -> false // Hide for Flash
-            ExecutePluginActionScreenDestination.route -> false // Hide for ExecutePluginAction
+            FlashScreenDestination.route -> false // Hide for Flash and plugin actions
             else -> true
         }
+
+        val density = LocalDensity.current
+        var bottomBarHeight by remember { mutableStateOf(0.dp) }
+        val fabHost = remember { FloatingBarFabHost() }
 
         Box {
             Scaffold(
@@ -229,11 +268,12 @@ class AxActivity : ComponentActivity() {
             ) { innerPadding ->
                 CompositionLocalProvider(
                     LocalSnackbarHost provides snackBarHostState,
+                    LocalFloatingBarInset provides if (showBottomBar) bottomBarHeight else 0.dp,
+                    LocalFloatingBarFabHost provides fabHost,
                 ) {
                     DestinationsNavHost(
-                        modifier = Modifier
-                            .padding(innerPadding)
-                            .padding(bottom = if (showBottomBar) 80.dp else 0.dp),
+                        // Full-bleed content; the floating bar overlays it and each screen adds its own bottom inset.
+                        modifier = Modifier.padding(innerPadding),
                         navGraph = NavGraphs.root,
                         navController = navController,
                         dependenciesContainerBuilder = {
@@ -295,12 +335,49 @@ class AxActivity : ComponentActivity() {
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
-                BottomBar(
-                    navController,
-                    navigator,
-                    activateViewModel.axeronInfo,
-                    pluginViewModel.pluginUpdateCount
-                )
+                CompositionLocalProvider(LocalSnackbarHost provides snackBarHostState) {
+                    val navBarInset =
+                        WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.BottomCenter
+                    ) {
+                        // Soft fade behind the pill, down through the system nav bar, mirroring
+                        // the top bar's gradient. Sized from the pill row only, so FABs stacking
+                        // up (e.g. re-ignite) never resize it.
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(bottomBarHeight + navBarInset)
+                                .background(bottomBarFadeBrush(MaterialTheme.colorScheme.background))
+                        )
+
+                        // Pill and the page's FABs form one centered group on a shared bottom
+                        // baseline. No animateContentSize here: it lays content out from the top,
+                        // which made the bottom-anchored pill jump whenever the FAB stack resized.
+                        // The FAB slot animates its own width, so the pill glides to re-center.
+                        Row(
+                            modifier = Modifier
+                                .navigationBarsPadding()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.Bottom
+                        ) {
+                            BottomBar(
+                                navController,
+                                navigator,
+                                activateViewModel.axeronInfo,
+                                pluginViewModel.pluginUpdateCount,
+                                // Screens pad for the pill row only (+12dp above and below);
+                                // extra stacked FABs float over content like a normal FAB.
+                                modifier = Modifier.onSizeChanged {
+                                    bottomBarHeight = with(density) { it.height.toDp() } + 24.dp
+                                }
+                            )
+                            FloatingBarFabSlot(fabHost)
+                        }
+                    }
+                }
             }
         }
     }
@@ -310,18 +387,24 @@ class AxActivity : ComponentActivity() {
         navController: NavHostController,
         navigator: DestinationsNavigator,
         axeronServerInfo: AxeronInfo,
-        moduleUpdateCount: Int
+        moduleUpdateCount: Int,
+        modifier: Modifier = Modifier
     ) {
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainer
-            ),
-            elevation = CardDefaults.cardElevation(0.dp),
-            shape = RoundedCornerShape(topStart = 15.dp, topEnd = 15.dp)
+        // Icon-only pill, 56dp tall to match a FAB. Labels show as a tooltip on long-press.
+        Surface(
+            modifier = modifier,
+            shape = CircleShape,
+            // Tonal secondary so the bar stands apart from the surfaceContainerHigh cards behind it.
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            shadowElevation = 8.dp
         ) {
-            NavigationBar(
-                containerColor = Color.Transparent,
-                tonalElevation = 0.dp
+            Row(
+                modifier = Modifier
+                    .padding(6.dp)
+                    .animateContentSize(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 BottomBarDestination.entries
                     .forEach { destination ->
@@ -330,9 +413,11 @@ class AxActivity : ComponentActivity() {
                         val isCurrentDestOnBackStack by navController.isRouteOnBackStackAsState(
                             destination.direction
                         )
-                        val label = stringResource(id = destination.labelId)
-                        NavigationBarItem(
+                        BottomBarItem(
                             selected = isCurrentDestOnBackStack,
+                            icon = if (isCurrentDestOnBackStack) destination.iconSelected else destination.iconNotSelected,
+                            label = stringResource(id = destination.labelId),
+                            badgeCount = if (destination == BottomBarDestination.Plugin) moduleUpdateCount else 0,
                             onClick = {
                                 if (isCurrentDestOnBackStack) {
                                     navigator.popBackStack(destination.direction, false)
@@ -344,38 +429,55 @@ class AxActivity : ComponentActivity() {
                                     launchSingleTop = true
                                     restoreState = true
                                 }
-                            },
-                            icon = {
-                                if (destination == BottomBarDestination.Plugin && moduleUpdateCount > 0) {
-                                    BadgedBox(badge = { Badge { Text(moduleUpdateCount.toString()) } }) {
-                                        if (isCurrentDestOnBackStack) {
-                                            Icon(
-                                                destination.iconSelected,
-                                                label
-                                            )
-                                        } else {
-                                            Icon(
-                                                destination.iconNotSelected,
-                                                label
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    if (isCurrentDestOnBackStack) Icon(
-                                        imageVector = destination.iconSelected,
-                                        contentDescription = label
-                                    ) else Icon(
-                                        imageVector = destination.iconNotSelected,
-                                        contentDescription = label
-                                    )
-                                }
-                            },
-                            label = {
-                                Text(label)
-                            },
-                            alwaysShowLabel = false
+                            }
                         )
                     }
+            }
+        }
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun BottomBarItem(
+        selected: Boolean,
+        icon: ImageVector,
+        label: String,
+        badgeCount: Int,
+        onClick: () -> Unit
+    ) {
+        val containerColor by animateColorAsState(
+            targetValue = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+            label = "navItemContainer"
+        )
+        val contentColor by animateColorAsState(
+            targetValue = if (selected) {
+                MaterialTheme.colorScheme.onPrimary
+            } else {
+                MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.75f)
+            },
+            label = "navItemContent"
+        )
+
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+            tooltip = { PlainTooltip { Text(label) } },
+            state = rememberTooltipState()
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(containerColor)
+                    .clickable(onClick = onClick)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (badgeCount > 0) {
+                    BadgedBox(badge = { Badge { Text(badgeCount.toString()) } }) {
+                        Icon(imageVector = icon, contentDescription = label, tint = contentColor)
+                    }
+                } else {
+                    Icon(imageVector = icon, contentDescription = label, tint = contentColor)
+                }
             }
         }
     }

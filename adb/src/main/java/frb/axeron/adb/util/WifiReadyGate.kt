@@ -69,15 +69,9 @@ class WifiReadyGate(
 
         Log.d(TAG, "fire() network=$network")
 
-        // Bind process if possible (critical for OEMs)
-        if (network != null) {
-            try {
-                cm.bindProcessToNetwork(network)
-                Log.d(TAG, "process bound to network")
-            } catch (e: Exception) {
-                Log.w(TAG, "bindProcessToNetwork failed", e)
-            }
-        }
+        // The process isn't bound to it: adbd is reached on loopback, and a binding outlives
+        // the network, after which every socket of the process fails with ENONET (TCP mode's
+        // connection to 127.0.0.1 too) until the app is restarted.
 
         cleanup()
         onReady(network)
@@ -91,6 +85,9 @@ class WifiReadyGate(
         handler.removeCallbacksAndMessages(null)
     }
 
+    // connectionInfo is deprecated for a NetworkCallback's WifiInfo, which only comes once there
+    // is a network; this fast path is for a link that's up before that.
+    @Suppress("DEPRECATION")
     private fun isWifiLinkUp(): Boolean {
         val info = wm.connectionInfo ?: return false
         return info.networkId != -1 &&

@@ -4,9 +4,12 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Process
 import android.widget.ImageView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import frb.axeron.manager.ui.component.AxTopPanelShape
+import frb.axeron.manager.ui.component.AxPanelShape
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,7 +20,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -48,6 +50,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import frb.axeron.api.Axeron
 import frb.axeron.ktx.workerHandler
 import frb.axeron.manager.R
+import frb.axeron.manager.ui.component.AppIcon
+import frb.axeron.manager.ui.component.NeedMoreStepDialog
 import frb.axeron.manager.ui.theme.AxManagerTheme
 import frb.axeron.server.util.Logger
 import frb.axeron.shared.ShizukuApiConstant.REQUEST_PERMISSION_REPLY_ALLOWED
@@ -60,9 +64,18 @@ import java.util.concurrent.TimeoutException
 
 class RequestPermissionActivity : ComponentActivity() {
 
+    companion object {
+        /**
+         * From RequestAccessActivity: no "allow once", as no process of the app is attached to
+         * hold a one-time grant. The answer goes back to that app as this activity's result.
+         */
+        const val EXTRA_FOR_GOOD_ONLY = "forGoodOnly"
+    }
+
     private val LOGGER = Logger("RequestPermissionActivity")
 
     private fun setResult(uid: Int, pid: Int, code: Int, allowed: Boolean, onetime: Boolean) {
+        setResult(if (allowed) RESULT_OK else RESULT_CANCELED)
         val data = Bundle().apply {
             putBoolean(REQUEST_PERMISSION_REPLY_ALLOWED, allowed)
             putBoolean(REQUEST_PERMISSION_REPLY_IS_ONETIME, onetime)
@@ -104,6 +117,16 @@ class RequestPermissionActivity : ComponentActivity() {
             intent.getParcelableExtra("applicationInfo")
         }
 
+        // A server that doesn't take us for the manager (left running across a reinstall, so it
+        // knows our old uid) refuses our own axsh commands, and axsh asks for permission for
+        // us. Nothing to grant to ourselves: no dialog, and no answer, as a deny would revoke
+        // our own user services on a server that does know us.
+        if (uid == Process.myUid()) {
+            LOGGER.w("permission request for the manager itself, the server needs a restart")
+            finish()
+            return
+        }
+
         if (uid == -1 || pid == -1 || ai == null || !waitForBinder()) {
             finish()
             return
@@ -113,7 +136,17 @@ class RequestPermissionActivity : ComponentActivity() {
             Axeron.checkRemotePermission("android.permission.GRANT_RUNTIME_PERMISSIONS") == PackageManager.PERMISSION_GRANTED
 
         if (!permission) {
-            setResult(uid, pid, requestCode, allowed = false, onetime = true)
+            setContent {
+                AxManagerTheme {
+                    NeedMoreStepDialog(
+                        applicationInfo = ai,
+                        onDismiss = {
+                            setResult(uid, pid, requestCode, allowed = false, onetime = true)
+                            finish()
+                        }
+                    )
+                }
+            }
             return
         }
 
@@ -121,6 +154,7 @@ class RequestPermissionActivity : ComponentActivity() {
             AxManagerTheme {
                 RequestPermissionDialog(
                     applicationInfo = ai,
+                    allowOnce = !intent.getBooleanExtra(EXTRA_FOR_GOOD_ONLY, false),
                     onAllow = { once ->
                         setResult(uid, pid, requestCode, allowed = true, onetime = once)
                         finish()
@@ -139,6 +173,7 @@ class RequestPermissionActivity : ComponentActivity() {
 @Composable
 fun RequestPermissionDialog(
     applicationInfo: ApplicationInfo,
+    allowOnce: Boolean = true,
     onAllow: (once: Boolean) -> Unit,
     onDeny: () -> Unit
 ) {
@@ -165,7 +200,7 @@ fun RequestPermissionDialog(
         onDismissRequest = { onDeny() },
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        shape = AxTopPanelShape,
         dragHandle = { }
     ) {
         Column(
@@ -185,7 +220,7 @@ fun RequestPermissionDialog(
                     pm = pm,
                     modifier = Modifier
                         .size(56.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(AxPanelShape)
                 )
 
                 Spacer(Modifier.width(12.dp))
@@ -231,16 +266,16 @@ fun RequestPermissionDialog(
                     onClick = {
                         scope.launch { sheetState.hide() }.invokeOnCompletion { onAllow(false) }
                     },
-                    shape = RoundedCornerShape(12.dp)
+                    shape = AxPanelShape
                 ) {
                     Text(stringResource(R.string.permission_allow_all_time))
                 }
-                Button(
+                if (allowOnce) Button(
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         scope.launch { sheetState.hide() }.invokeOnCompletion { onAllow(true) }
                     },
-                    shape = RoundedCornerShape(12.dp),
+                    shape = AxPanelShape,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant,
                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -253,7 +288,7 @@ fun RequestPermissionDialog(
                     onClick = {
                         scope.launch { sheetState.hide() }.invokeOnCompletion { onDeny() }
                     },
-                    shape = RoundedCornerShape(12.dp),
+                    shape = AxPanelShape,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color.Transparent,
                         contentColor = MaterialTheme.colorScheme.error
@@ -271,22 +306,4 @@ fun RequestPermissionDialog(
             Spacer(Modifier.height(8.dp))
         }
     }
-}
-
-@Composable
-fun AppIcon(
-    applicationInfo: ApplicationInfo,
-    pm: PackageManager,
-    modifier: Modifier = Modifier
-) {
-    AndroidView(
-        factory = { context ->
-            ImageView(context).apply {
-                setImageDrawable(pm.getApplicationIcon(applicationInfo))
-                clipToOutline = true
-                layoutParams = android.widget.LinearLayout.LayoutParams(120, 120)
-            }
-        },
-        modifier = modifier
-    )
 }

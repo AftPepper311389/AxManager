@@ -13,9 +13,10 @@ import frb.axeron.api.Axeron
 import frb.axeron.api.core.AxeronSettings
 import frb.axeron.api.core.Starter
 import frb.axeron.manager.adb.AdbStarter
-import frb.axeron.manager.adb.AdbStateInfo
+import frb.axeron.manager.adb.BootWatchdogService
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 class BootCompleteReceiver : BroadcastReceiver() {
 
@@ -43,17 +44,38 @@ class BootCompleteReceiver : BroadcastReceiver() {
             return
         }
 
+        // The wait for Wi-Fi can take minutes, which a broadcast can't: a foreground service
+        // does it and shows the steps (it ignores the second of the two boot broadcasts).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
             context.checkSelfPermission(WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED &&
             AxeronSettings.getLastLaunchMode() == AxeronSettings.LaunchMethod.ADB
         ) {
-            val pending = goAsync()
-            startAdb(context) {
-                safeFinish(pending)
+            try {
+                BootWatchdogService.start(context)
+            } catch (e: Throwable) {
+                // The start matters more than showing it: go on without the notification.
+                Log.e(TAG, "Couldn't start the boot watchdog, starting directly", e)
+                val pending = goAsync()
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        AdbStarter.startAdbWireless(context.applicationContext)
+                    } finally {
+                        safeFinish(pending)
+                    }
+                }
             }
-        } else if (AxeronSettings.getLastLaunchMode() == AxeronSettings.LaunchMethod.ROOT) {
+        } else if (AxeronSettings.getLastLaunchMode() == AxeronSettings.LaunchMethod.ROOT ||
+            AxeronSettings.getLastLaunchMode() == AxeronSettings.LaunchMethod.ROOT_AS_SHELL
+        ) {
             val pending = goAsync()
-            startRoot(pending)
+            val mode = AxeronSettings.getLastLaunchMode()
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    startRoot(mode)
+                } finally {
+                    safeFinish(pending)
+                }
+            }
         } else {
             Log.w(TAG, "No support start on boot")
         }
@@ -61,23 +83,19 @@ class BootCompleteReceiver : BroadcastReceiver() {
         Log.d(TAG, "onReceive: ${intent.action}")
     }
 
-    private fun startRoot(pending: PendingResult) {
+    private fun startRoot(mode: Int) {
         if (!Shell.getShell().isRoot) {
             Shell.getCachedShell()?.close()
-            safeFinish(pending)
             return
         }
 
-        Shell.cmd(Starter.internalCommand).exec()
-        safeFinish(pending)
-    }
+        val command = if (mode == AxeronSettings.LaunchMethod.ROOT_AS_SHELL) {
+            "su 2000 -c \"${Starter.internalCommand}\""
+        } else {
+            Starter.internalCommand
+        }
 
-    @RequiresApi(Build.VERSION_CODES.R)
-    private fun startAdb(
-        context: Context,
-        finish: (AdbStateInfo) -> Unit
-    ) = runBlocking(Dispatchers.IO) {
-        AdbStarter.startAdbWireless(context, finish)
+        Shell.cmd(command).exec()
     }
 
     fun safeFinish(pending: PendingResult) {

@@ -1,9 +1,7 @@
 package frb.axeron.server
 
 import android.Manifest.permission.WRITE_SECURE_SETTINGS
-import android.app.ActivityThread
 import android.content.Context
-import android.content.ContextHidden
 import android.content.IContentProvider
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -18,27 +16,29 @@ import android.os.IBinder
 import android.os.IPowerManager
 import android.os.Looper
 import android.os.Parcel
+import android.os.ParcelFileDescriptor
 import android.os.Parcelable
 import android.os.PowerManager
 import android.os.RemoteException
 import android.os.SELinux
+import android.os.SystemProperties
+import android.util.SparseArray
 import android.os.ServiceManager
 import android.os.SystemClock
-import android.os.UserHandle
-import android.os.UserHandleHidden
 import android.system.Os
-import dev.rikka.tools.refine.Refine
-import frb.axeron.server.ServerConstants.MANAGER_APPLICATION_ID
 import frb.axeron.server.ServerConstants.PERMISSION
 import frb.axeron.server.ServerConstants.SHIZUKU_MANAGER_APPLICATION_ID
 import frb.axeron.server.api.RemoteProcessHolder
+import frb.axeron.server.axsh.AxshServer
 import frb.axeron.server.util.HandlerUtil
 import frb.axeron.server.util.IContentProviderCompat
 import frb.axeron.server.util.OsUtils
 import frb.axeron.server.util.UserHandleCompat
 import frb.axeron.shared.AxeronApiConstant
+import frb.axeron.shared.AxeronApiConstant.server.APPEND_ONLY_ENV
 import frb.axeron.shared.AxeronApiConstant.server.BINDER_DESCRIPTOR
 import frb.axeron.shared.AxeronApiConstant.server.TYPE_ENV
+import frb.axeron.shared.MiuiAppOps
 import frb.axeron.shared.AxeronApiConstant.server.TYPE_NEW_ENV
 import frb.axeron.shared.AxeronApiConstant.server.VERSION_CODE
 import frb.axeron.shared.AxeronApiConstant.server.VERSION_NAME
@@ -66,10 +66,13 @@ import rikka.hidden.compat.PermissionManagerApis
 import rikka.hidden.compat.UserManagerApis
 import rikka.hidden.compat.util.SystemServiceBinder
 import rikka.parcelablelist.ParcelableListSlice
-import rikka.rish.RishConfig
+import frb.axeron.shell.KeepAlive
+import frb.axeron.shell.host.ShellProcess
+import frb.axeron.shell.host.PtyHost
 import java.io.File
 import java.io.IOException
-import java.lang.ref.WeakReference
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.system.exitProcess
 
 
@@ -77,15 +80,136 @@ open class AxeronService :
     Service<AxeronUserServiceManager, AxeronClientManager, AxeronConfigManager>() {
 
     companion object {
+        // checkCaller's cache states. Both lookup results are impossible uids, so no caller's
+        // appId can ever match them.
+        private const val MANAGER_UID_UNKNOWN = -1
+        private const val MANAGER_UID_MISSING = Int.MIN_VALUE
+        private const val MANAGER_UID_LOOKUP_FAILED = Int.MIN_VALUE + 1
+
+        // The manager's package is there, but signed by someone else than the manager this
+        // server started from.
+        private const val MANAGER_UID_FOREIGN = Int.MIN_VALUE + 2
+
+        // How long init waits (a second each) for the package manager to name the manager.
+        private const val MANAGER_RESOLVE_TRIES = 30
+
+        // In AXERONDIR. Must match START_ENV_FILE in starter.cpp.
+        private const val START_ENV_FILE = "server_env"
+
         @JvmStatic
         fun main(args: Array<String>) {
             DdmHandleAppName.setAppName("axeron_server", 0)
-            RishConfig.setLibraryPath(System.getProperty("axeron.library.path"))
+            PtyHost.setLibraryPath(System.getProperty("axeron.library.path"))
 
             @Suppress("DEPRECATION")
             Looper.prepareMainLooper()
-            AxeronService()
+            // Before the service exists: its constructor already reads the root world's configs.
+            if (Os.getuid() == 0) migrateRootWorld()
+            ensureCacheDir(Os.getuid() == 0)
+            saveStartEnv(Os.getuid() == 0)
+            val service = AxeronService()
+            service.startAxsh()
             Looper.loop()
+        }
+
+        /**
+         * $TMPDIR (cache/) is handed to every plugin process, but nothing else creates it: made
+         * here so it exists from the first start, owned by the server's uid.
+         */
+        private fun ensureCacheDir(isRoot: Boolean) {
+            val cache = PathHelper.getWorkingPath(isRoot, AxeronApiConstant.folder.PARENT_CACHE)
+            if (!cache.isDirectory && !cache.mkdirs()) {
+                LOGGER.w("can't create %s, plugins get a missing TMPDIR", cache)
+            }
+        }
+
+        /**
+         * The env this server was started with, for the starter: run again from inside AxManager
+         * (a relaunch, the manager's root shell, a plugin's script) it has the env the server
+         * gives its children, and takes this one instead. The boot id comes first, on a line of
+         * its own, so one from before a reboot is left alone; then each `KEY=value`, NUL-ended.
+         */
+        private fun saveStartEnv(isRoot: Boolean) {
+            val dir = PathHelper.getWorkingPath(isRoot, AxeronApiConstant.folder.PARENT)
+            try {
+                val bootId = File("/proc/sys/kernel/random/boot_id").readText().trim()
+                val data = buildString {
+                    append(bootId).append('\n')
+                    for ((key, value) in System.getenv()) {
+                        append(key).append('=').append(value).append('\u0000')
+                    }
+                }
+                // Written whole, then renamed: a starter never reads half of one.
+                val tmp = File(dir, "$START_ENV_FILE.tmp")
+                tmp.writeText(data)
+                if (!tmp.renameTo(File(dir, START_ENV_FILE))) {
+                    LOGGER.w("can't save the start env in %s", dir)
+                }
+            } catch (e: Throwable) {
+                LOGGER.w(e, "can't save the start env in %s", dir)
+            }
+        }
+
+        /**
+         * One-time move of the root world from its old home (/data/user_de/0/android/axeron) to
+         * /data/adb/axeron. Skipped when the new folder already exists, so nothing is overwritten;
+         * the old one is then left as it is.
+         *
+         * bin, xbin, cache and zip are dropped instead of moved: they are recreated on every start,
+         * and the symlinks in bin/xbin would still point into the old folder. Renamed files keep
+         * their old SELinux label, so they are relabeled to /data/adb's.
+         */
+        private fun migrateRootWorld() {
+            val old = File(AxeronApiConstant.folder.ROOT_DE, AxeronApiConstant.folder.PARENT).absoluteFile
+            val new = PathHelper.getWorkingPath(true, AxeronApiConstant.folder.PARENT).absoluteFile
+            if (!old.isDirectory) return
+            if (new.exists()) {
+                LOGGER.w("migrate: %s already exists, old root data left at %s", new, old)
+                return
+            }
+
+            val parent = new.parentFile ?: return
+            if (!parent.isDirectory && !parent.mkdirs()) {
+                LOGGER.e("migrate: can't create %s", parent)
+                return
+            }
+            // Same filesystem in practice (both on /data); mv covers the rare case where not.
+            if (!old.renameTo(new) && exec("mv", old.path, new.path) != 0) {
+                LOGGER.e("migrate: can't move %s to %s, root data left in place", old, new)
+                return
+            }
+
+            listOf(
+                AxeronApiConstant.folder.BINARY,
+                AxeronApiConstant.folder.EXTERNAL_BINARY,
+                AxeronApiConstant.folder.CACHE,
+                AxeronApiConstant.folder.ZIP
+            ).forEach {
+                // rm -rf never follows symlinks, unlike File.deleteRecursively.
+                exec("rm", "-rf", File(new, it).path)
+            }
+
+            val label = execOutput("stat", "-c", "%C", parent.path)?.takeIf { it.startsWith("u:") }
+            if (label != null) exec("chcon", "-hR", label, new.path)
+            else LOGGER.w("migrate: can't read the label of %s, %s keeps its old one", parent, new)
+
+            LOGGER.i("migrate: root world moved from %s to %s", old, new)
+        }
+
+        private fun exec(vararg cmd: String): Int = try {
+            Runtime.getRuntime().exec(cmd).waitFor()
+        } catch (e: Throwable) {
+            LOGGER.w(e, "exec %s", cmd.joinToString(" "))
+            -1
+        }
+
+        private fun execOutput(vararg cmd: String): String? = try {
+            val process = Runtime.getRuntime().exec(cmd)
+            val out = process.inputStream.bufferedReader().readText().trim()
+            if (process.waitFor() == 0) out else null
+        } catch (e: Throwable) {
+            LOGGER.w(e, "exec %s", cmd.joinToString(" "))
+            null
         }
 
         fun waitSystemService(name: String) {
@@ -99,6 +223,62 @@ open class AxeronService :
             }
         }
 
+        /** The manager this server was started from, and the certificate it was signed with. */
+        class RunningManager(val packageName: String, val uid: Int, val certDigest: String)
+
+        /**
+         * The manager is whoever started this server, not a package name: the starter runs the
+         * server from that manager's APK, and a later manager that starts a server replaces this
+         * one with it. Set in init once the package manager is up; a server that can't find its
+         * manager exits instead, so after init this is never null.
+         */
+        @Volatile
+        private var runningManager: RunningManager? = null
+
+        /** The manager's package. Only once the server has found its manager (see init). */
+        @get:JvmStatic
+        val managerPackage: String
+            get() = checkNotNull(runningManager) { "the manager isn't known yet" }.packageName
+
+        /**
+         * SHA-256 of [packageName]'s signing certificate(s), or null when it can't be read. A
+         * package of the manager's name signed by someone else is not the manager.
+         */
+        fun certDigest(packageName: String, userId: Int = 0): String? {
+            val signing = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PackageManager.GET_SIGNING_CERTIFICATES
+            } else {
+                @Suppress("DEPRECATION")
+                PackageManager.GET_SIGNATURES
+            }
+            val info = PackageManagerApis.getPackageInfoNoThrow(packageName, signing.toLong(), userId)
+                ?: return null
+            val signers = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                info.signingInfo?.apkContentsSigners
+            } else {
+                @Suppress("DEPRECATION")
+                info.signatures
+            }
+            if (signers.isNullOrEmpty()) return null
+            return signers.joinToString(",") { signer ->
+                MessageDigest.getInstance("SHA-256").digest(signer.toByteArray())
+                    .joinToString("") { "%02x".format(it) }
+            }
+        }
+
+        /**
+         * The package owning the APK this server runs from (-Djava.class.path, set by the
+         * starter), with its certificate. Null when no package owns the file or the certificate
+         * can't be read.
+         */
+        fun resolveRunningManager(): RunningManager? {
+            val apk = System.getProperty("java.class.path")?.substringBefore(':') ?: return null
+            val owner = PackageManagerApis.getInstalledPackagesNoThrow(0, 0)
+                .firstOrNull { it?.applicationInfo?.sourceDir == apk } ?: return null
+            val digest = certDigest(owner.packageName) ?: return null
+            return RunningManager(owner.packageName, owner.applicationInfo!!.uid, digest)
+        }
+
         val powerManager: SystemServiceBinder<IPowerManager> by lazy {
             SystemServiceBinder<IPowerManager>(
                 "power", IPowerManager.Stub::asInterface
@@ -107,7 +287,9 @@ open class AxeronService :
 
         @JvmStatic
         fun getManagerApplicationInfo(): ApplicationInfo? {
-            return PackageManagerApis.getApplicationInfoNoThrow(MANAGER_APPLICATION_ID, 0, 0)
+            // Null before the manager is found: the env Service's init builds at boot.
+            val manager = runningManager ?: return null
+            return PackageManagerApis.getApplicationInfoNoThrow(manager.packageName, 0, 0)
         }
 
         private fun getShizukuManagerApplicationInfo(): ApplicationInfo? {
@@ -150,7 +332,7 @@ open class AxeronService :
 
         @JvmStatic
         fun sendBinderToManager(binder: IBinder, userId: Int) {
-            sendBinderToUserApp(binder, MANAGER_APPLICATION_ID, userId)
+            sendBinderToUserApp(binder, managerPackage, userId)
         }
 
         @JvmStatic
@@ -164,6 +346,30 @@ open class AxeronService :
         }
 
         fun sendBinderToUserApp(binder: IBinder, packageName: String, userId: Int, retry: Boolean) {
+            val ours = packageName == runningManager?.packageName
+            val extras = Bundle().apply {
+                putParcelable(
+                    if (ours) "AxServer.BINDER" else "moe.shizuku.privileged.api.intent.extra.BINDER",
+                    BinderContainer(binder)
+                )
+            }
+            val name = if (ours) "$packageName.server" else "$packageName.shizuku"
+            callAppProvider(packageName, userId, name, "sendBinder", extras, retry)
+        }
+
+        /** An allowed app's capability, to the provider axsh's manifest gives it. */
+        @JvmStatic
+        fun sendCapabilityToApp(capability: IBinder, packageName: String, userId: Int) {
+            val extras = Bundle().apply { putBinder(AxeronApiConstant.server.EXTRA_CAPABILITY, capability) }
+            callAppProvider(
+                packageName, userId, packageName + AxeronApiConstant.server.PROVIDER_AUTHORITY_SUFFIX,
+                AxeronApiConstant.server.METHOD_SEND_CAPABILITY, extras, true
+            )
+        }
+
+        private fun callAppProvider(
+            packageName: String, userId: Int, name: String, method: String, extras: Bundle, retry: Boolean
+        ) {
             try {
                 DeviceIdleControllerApis.addPowerSaveTempWhitelistApp(
                     packageName, 30 * 1000, userId,
@@ -179,15 +385,6 @@ open class AxeronService :
                 )
             }
 
-            var name: String
-            var extraBinder: String
-            if (packageName == MANAGER_APPLICATION_ID) {
-                name = "$packageName.server"
-                extraBinder = "AxServer.BINDER"
-            } else {
-                name = "$packageName.shizuku"
-                extraBinder = "moe.shizuku.privileged.api.intent.extra.BINDER"
-            }
             var provider: IContentProvider?
             val token: IBinder? = null
 
@@ -204,8 +401,11 @@ open class AxeronService :
                     if (retry) {
                         ActivityManagerApis.forceStopPackageNoThrow(packageName, userId)
                         LOGGER.e("kill %s in user %d and try again", packageName, userId)
-                        Thread.sleep(1000)
-                        sendBinderToUserApp(binder, packageName, userId, false)
+                        // Later, not by sleeping: callers are the main thread and the uid and
+                        // process observers, whose other events would wait behind it.
+                        Service.mainHandler.postDelayed({
+                            callAppProvider(packageName, userId, name, method, extras, false)
+                        }, 1000)
                     }
                     return
                 }
@@ -214,13 +414,10 @@ open class AxeronService :
                     LOGGER.e("retry works")
                 }
 
-                val extra = Bundle().apply {
-                    putParcelable(extraBinder, BinderContainer(binder))
-                }
-                IContentProviderCompat.call(provider, null, null, name, "sendBinder", null, extra)
-                LOGGER.i("send binder to user app %s in user %d", packageName, userId)
+                IContentProviderCompat.call(provider, null, null, name, method, null, extras)
+                LOGGER.i("%s to %s in user %d", method, name, userId)
             } catch (it: Throwable) {
-                LOGGER.e(it, "failed send binder to user app %s in user %d", packageName, userId)
+                LOGGER.e(it, "failed %s to %s in user %d", method, name, userId)
             } finally {
                 try {
                     ActivityManagerApis.removeContentProviderExternal(name, token)
@@ -230,13 +427,18 @@ open class AxeronService :
             }
         }
 
+        @Volatile
         var cachedDefaultEnv: Environment? = null
+
+        @Volatile
+        var preferSystemBinaries: Boolean = false
 
         fun getDefaultEnvironment(): Environment {
             val cached = cachedDefaultEnv
             if (cached != null) return cached
 
-            val built = Environment.Builder(false)
+            val managerInfo = getManagerApplicationInfo()
+            val builder = Environment.Builder(false)
                 .put("AXERON", "true")
                 .put("HOSTNAME", "axeron")
                 .put(
@@ -257,24 +459,68 @@ open class AxeronService :
                         AxeronApiConstant.folder.PARENT_EXTERNAL_BINARY
                     ).absolutePath
                 )
-                .put("AXERONLIB", getManagerApplicationInfo()?.nativeLibraryDir)
                 .put("AXERONVER", VERSION_CODE.toString())
                 .put(
                     "TMPDIR",
-                    PathHelper.getWorkingPath(isRoot,AxeronApiConstant.folder.PARENT_CACHE).absolutePath
+                    PathHelper.getWorkingPath(isRoot, AxeronApiConstant.folder.PARENT_CACHE).absolutePath
                 )
-                .put("PATH", $$"$AXERONXBIN:$PATH:$AXERONBIN")
-                .build()
+
+            // Pastikan PATH sistem tetap ada sebagai fallback
+            val systemPath = System.getenv("PATH") ?: "/sbin:/system/bin:/system/xbin"
+            builder.put("PATH", orderPath((axeronBinDirs() + systemPath).joinToString(":")))
+
+            if (managerInfo != null) {
+                builder.put("AXERONLIB", managerInfo.nativeLibraryDir)
+                val systemLd = System.getenv("LD_LIBRARY_PATH")
+                if (systemLd.isNullOrEmpty()) {
+                    // A set LD_LIBRARY_PATH becomes a child VM's whole java.library.path, so the
+                    // linker defaults (this server's own java.library.path) must stay behind it:
+                    // without them a boot-class System.loadLibrary fails (MIUI's libmiuinative
+                    // on Android 9/10 kills every app_process child on its first binder call).
+                    val defaultLd = System.getProperty("java.library.path").orEmpty()
+                    builder.put(
+                        "LD_LIBRARY_PATH",
+                        if (defaultLd.isEmpty()) "\$AXERONLIB" else "\$AXERONLIB:$defaultLd"
+                    )
+                } else {
+                    // Taruh AXERONLIB di depan agar binari kustom kita prioritas menemukan lib-nya sendiri
+                    builder.put("LD_LIBRARY_PATH", "\$AXERONLIB:\$LD_LIBRARY_PATH")
+                }
+            }
+
+            val built = builder.build()
             cachedDefaultEnv = built
             return built
+        }
+
+        /** AXERONXBIN and AXERONBIN, in their default order. */
+        private fun axeronBinDirs(): List<String> = listOf(
+            PathHelper.getWorkingPath(isRoot, AxeronApiConstant.folder.PARENT_EXTERNAL_BINARY).absolutePath,
+            PathHelper.getWorkingPath(isRoot, AxeronApiConstant.folder.PARENT_BINARY).absolutePath
+        )
+
+        /**
+         * [path] with AxManager's bin dirs in front of the rest, or behind it when system binaries
+         * are preferred; each entry kept once. A system PATH inherited from a server started inside
+         * an AxManager shell may already hold these dirs.
+         */
+        private fun orderPath(path: String): String {
+            val ours = axeronBinDirs()
+            val rest = path.split(':').filter { it.isNotEmpty() && it !in ours }.distinct()
+            val present = ours.filter { it in path.split(':') }
+            return (if (preferSystemBinaries) rest + present else present + rest).joinToString(":")
         }
     }
 
     val lockToken = Binder()
 
-    fun acquire() {
+    /** Whether [lockToken] currently holds the wakelock; guarded by [lockToken]. */
+    @Volatile
+    private var wakeLockHeld = false
+
+    private fun acquire(): Boolean {
         LOGGER.i("Acquire wakelock")
-        try {
+        return try {
             val flags = PowerManager.PARTIAL_WAKE_LOCK
             val tag = "axeron::wakelock"
             val pkg = "axeron_server"
@@ -288,23 +534,42 @@ open class AxeronService :
                 powerManager.get().acquireWakeLockWithUid(lockToken, flags, tag, pkg, uid)
             }
             LOGGER.i("Acquire wakelock success")
+            true
         } catch (e: Exception) {
             LOGGER.e("Acquire wakelock failed", e)
+            false
         }
     }
 
-    fun release() {
+    private fun release(): Boolean {
         LOGGER.i("Release wakelock")
-        try {
+        return try {
             powerManager.get().releaseWakeLock(lockToken, 0)
             LOGGER.i("Release wakelock success")
+            true
         } catch (e: Exception) {
             LOGGER.e("Release wakelock failed", e)
+            false
         }
     }
 
+    /** Manager only. Asking for the state it is already in does nothing. */
+    override fun setWakeLock(enabled: Boolean) {
+        enforceManagerPermission("setWakeLock")
+        synchronized(lockToken) {
+            if (enabled == wakeLockHeld) return
+            if (enabled) {
+                if (acquire()) wakeLockHeld = true
+            } else {
+                if (release()) wakeLockHeld = false
+            }
+        }
+    }
+
+    override fun isWakeLockHeld(): Boolean = wakeLockHeld
+
     override fun onCreateUserServiceManager(): AxeronUserServiceManager {
-        return AxeronUserServiceManager(getEnvironment(TYPE_ENV)?.getEnv())
+        return AxeronUserServiceManager(getEnvironment(TYPE_ENV).env)
     }
 
     override fun onCreateClientManager(): AxeronClientManager {
@@ -315,21 +580,168 @@ open class AxeronService :
         return AxeronConfigManager()
     }
 
-    @Synchronized
-    fun checkCaller(callingUid: Int): Boolean {
-        val managerAppUid: Int =
-            getManagerApplicationInfo()?.uid ?: exitProcess(ServerConstants.MANAGER_APP_NOT_FOUND)
+    // Volatile, not locked: every gated call and every axsh auth passes here. Two threads
+    // filling the cache at once look up, and store, the same uid. attachApplication also seeds
+    // the manager's entry from the caller's validated uid, so the manager's first gated call
+    // normally needs no PackageManager look-up at all.
+    @Volatile
+    private var cachedManagerUid: Int = MANAGER_UID_UNKNOWN
 
-        val shizukuManagerUid: Int = getShizukuManagerApplicationInfo()?.uid ?: managerAppUid
-        return UserHandleCompat.getAppId(callingUid) == managerAppUid || UserHandleCompat.getAppId(
-            callingUid
-        ) == shizukuManagerUid
+    @Volatile
+    private var cachedShizukuManagerUid: Int = MANAGER_UID_UNKNOWN
+
+    /**
+     * The manager's uid for [checkCaller], or [MANAGER_UID_MISSING] / [MANAGER_UID_LOOKUP_FAILED].
+     * The "no throw" helper collapses both into null, but they mean different things: only a
+     * manager that is really gone ends the server, while a look-up that failed (system_server
+     * restarting, a package transaction in flight, a busy device) says nothing about the caller
+     * and is retried on the next call.
+     */
+    private fun resolveManagerUid(): Int {
+        val manager = runningManager ?: return MANAGER_UID_LOOKUP_FAILED
+        return try {
+            val uid = PackageManagerApis.getApplicationInfo(manager.packageName, 0, 0)?.uid
+            when {
+                uid == null -> MANAGER_UID_MISSING
+                else -> when (certDigest(manager.packageName)) {
+                    manager.certDigest -> uid
+                    null -> MANAGER_UID_LOOKUP_FAILED
+                    else -> MANAGER_UID_FOREIGN
+                }
+            }
+        } catch (e: PackageManager.NameNotFoundException) {
+            MANAGER_UID_MISSING
+        } catch (e: Throwable) {
+            LOGGER.w(e, "can't look up the manager, denying this call")
+            MANAGER_UID_LOOKUP_FAILED
+        }
+    }
+
+    /** Whether the manager's package still has the certificate the server started under. */
+    private fun managerCertMatches(): Boolean {
+        val manager = runningManager ?: return false
+        return certDigest(manager.packageName) == manager.certDigest
+    }
+
+    /**
+     * The manager's appId from the cache or a look-up, or the MANAGER_UID_* state it couldn't be
+     * had in (always negative, as no appId is). Only a real appId is cached.
+     */
+    private fun managerAppId(): Int {
+        val cached = cachedManagerUid
+        if (cached != MANAGER_UID_UNKNOWN) return cached
+        val resolved = resolveManagerUid()
+        if (resolved < 0) return resolved
+        return UserHandleCompat.getAppId(resolved).also { cachedManagerUid = it }
+    }
+
+    /**
+     * Whether [uid] is the manager's own. [checkCaller] lets the Shizuku app in too (through the
+     * intercept only), and exits
+     * the server when the manager is gone; this does neither, for callers that only ask.
+     */
+    fun isManagerUid(uid: Int): Boolean {
+        val managerUid = managerAppId()
+        return managerUid >= 0 && UserHandleCompat.getAppId(uid) == managerUid
+    }
+
+    fun checkCaller(callingUid: Int): Boolean {
+        val managerUid = managerAppId()
+        if (managerUid == MANAGER_UID_MISSING) {
+            exitProcess(ServerConstants.MANAGER_APP_NOT_FOUND)
+        }
+        if (managerUid == MANAGER_UID_LOOKUP_FAILED) return false
+        if (managerUid == MANAGER_UID_FOREIGN) {
+            LOGGER.w("%s isn't signed like the manager this server started from, denying", managerPackage)
+            return false
+        }
+        val appId = UserHandleCompat.getAppId(callingUid)
+        if (appId == managerUid) return true
+        // The Shizuku app manages its clients through the intercept only. Its package name proves
+        // nothing, and the Axeron binder reaches any app (the sticky), so it is no manager there.
+        if (!ShizukuServiceIntercept.isServing()) return false
+        var shizukuManagerUid = cachedShizukuManagerUid
+        if (shizukuManagerUid == MANAGER_UID_UNKNOWN) {
+            // A failed look-up falls back to the manager's uid for this call; the next call
+            // tries again.
+            shizukuManagerUid = getShizukuManagerApplicationInfo()?.uid
+                ?.let { UserHandleCompat.getAppId(it) }
+                ?: managerUid
+            cachedShizukuManagerUid = shizukuManagerUid
+        }
+        return appId == shizukuManagerUid
     }
 
     override fun checkCallerManagerPermission(
         func: String?, callingUid: Int, callingPid: Int
     ): Boolean {
         return checkCaller(callingUid)
+    }
+
+    private var axshServer: AxshServer? = null
+
+    /** One per granted uid, minted the first time it is handed out. */
+    private val capabilities = SparseArray<ClientCapability>()
+
+    /**
+     * [uid]'s view of the server, or null while it isn't allowed: an app that isn't gets nothing
+     * to call. Kept per uid; it refuses calls by itself once the grant is gone.
+     */
+    fun capabilityFor(uid: Int): ClientCapability? {
+        if (configManager.find(uid)?.isAllowed != true) return null
+        return capabilityOf(uid)
+    }
+
+    /** [uid]'s capability whether or not it is allowed yet: before, it can only ask. */
+    private fun capabilityOf(uid: Int): ClientCapability =
+        synchronized(capabilities) {
+            capabilities.get(uid) ?: ClientCapability(this, uid).also { capabilities.put(uid, it) }
+        }
+
+    /**
+     * For the manager's relay, whose app_process requester has no provider to push to and no
+     * activity to ask from: its capability even before it is allowed, so it can ask (as its own
+     * uid; any other uid can't use it). The requester named the manager to get here.
+     */
+    override fun getClientCapability(uid: Int): IBinder? {
+        enforceManagerPermission("getClientCapability")
+        if (uid < 0 || isManagerUid(uid)) return null
+        return capabilityOf(uid).asBinder()
+    }
+
+    /**
+     * Hands [uid] its capability through the provider of each of its packages, if it is allowed;
+     * an app without axsh's provider is just logged. Off the caller's thread: reaching a provider
+     * may start its app.
+     */
+    fun pushCapability(uid: Int) {
+        if (isManagerUid(uid)) return
+        mainHandler.post {
+            val capability = capabilityFor(uid) ?: return@post
+            val userId = UserHandleCompat.getUserId(uid)
+            for (packageName in PackageManagerApis.getPackagesForUidNoThrow(uid)) {
+                sendCapabilityToApp(capability, packageName, userId)
+            }
+        }
+    }
+
+    /**
+     * Native `axsh` clients (uid/pid from SO_PEERCRED) reach the same gate as binder callers:
+     * root/shell always, the manager app always, everything else only once granted per-uid.
+     */
+    private fun checkAxshCaller(uid: Int): Boolean {
+        if (uid == 0 || uid == 2000) return true
+        if (checkCaller(uid)) return true
+        return configManager.find(uid)?.isAllowed == true
+    }
+
+    fun startAxsh() {
+        val server = AxshServer(
+            server = { this },
+            authorize = { uid, _ -> checkAxshCaller(uid) },
+        )
+        axshServer = server
+        server.start()
     }
 
     override fun checkCallerPermission(
@@ -341,12 +753,28 @@ open class AxeronService :
         if (checkCaller(callingUid)) {
             return true
         }
-        return clientRecord == null
+        // Attached clients are validated against clientRecord.allowed by Service.enforceCallingPermission.
+        if (clientRecord != null) {
+            return false
+        }
+        // Non-attached callers (axsh brokers, unattached Shizuku clients) are only allowed once
+        // their uid has been granted permission, mirroring Service.checkSelfPermission().
+        if (callingUid == 0 || callingUid == 2000) {
+            return true
+        }
+        return configManager.find(callingUid)?.isAllowed == true
     }
 
     private val starting: Long = SystemClock.elapsedRealtime()
 
     var shizuku: ShizukuServiceIntercept? = null
+
+    /**
+     * AX-Stealth Mode ([AxeronApiConstant.folder.STEALTH]): an app the manager hasn't allowed is
+     * told nothing, Shizuku clients included. Read each time, so the switch needs no restart.
+     */
+    fun isStealth(): Boolean =
+        File(PathHelper.getWorkingPath(isRoot, AxeronApiConstant.folder.PARENT), AxeronApiConstant.folder.STEALTH).exists()
 
     val axCompanion =
         File(
@@ -354,6 +782,48 @@ open class AxeronService :
             "ax_perm_companion"
         )
 
+    /**
+     * Waits on a pipe whose write end only this server holds and never writes to. When the
+     * server dies for any reason (exit(), a crash, SIGKILL, replaced by a new server) the kernel
+     * closes it, the watchdog's read returns, and if the user asked for it (flag file
+     * [AxeronApiConstant.folder.STOP_PLUGINS_WITH_SERVER], read at that moment) it stops every
+     * plugin's processes through the igniter. Kept in a field: a collected Process closes the
+     * pipe, which would fire the watchdog while the server is still running.
+     */
+    private var deathWatchdog: Process? = null
+
+    private fun startDeathWatchdog() {
+        val flag = File(
+            PathHelper.getWorkingPath(isRoot, AxeronApiConstant.folder.PARENT),
+            AxeronApiConstant.folder.STOP_PLUGINS_WITH_SERVER
+        ).absolutePath
+        // The manager's :reignite dex. An update of the manager moves its lib dir, so a server
+        // replaced after one finds it gone and leaves the plugins as they are.
+        val libDir = getManagerApplicationInfo()?.nativeLibraryDir ?: run {
+            LOGGER.w("no manager lib dir, no death watchdog")
+            return
+        }
+        val dex = File(libDir, "libaxreignite.so").absolutePath
+        val script = $$"""
+            read -r _
+            [ -f "$1" ] && [ -f "$2" ] || exit 0
+            CLASSPATH="$2" exec /system/bin/app_process / frb.axeron.reignite.Igniter --stop-all
+        """.trimIndent()
+
+        try {
+            deathWatchdog = ProcessBuilder("/system/bin/sh", "-c", script, "axeron_watchdog", flag, dex)
+                .apply {
+                    // The server's env, without a plugin marker (see getMergedEnvironment).
+                    environment().clear()
+                    environment().putAll(getEnvironment(TYPE_ENV).envMap)
+                }
+                .redirectErrorStream(true)
+                .redirectOutput(File("/dev/null"))
+                .start()
+        } catch (e: Throwable) {
+            LOGGER.w(e, "start death watchdog")
+        }
+    }
 
     init {
 
@@ -365,33 +835,86 @@ open class AxeronService :
         waitSystemService(Context.APP_OPS_SERVICE)
         waitSystemService(Context.POWER_SERVICE)
 
-        getManagerApplicationInfo() ?: exitProcess(ServerConstants.MANAGER_APP_NOT_FOUND)
+        // The manager must be there before anything is sent to it. A look-up that failed
+        // (PackageManager still starting at boot, a package transaction) is retried: only a
+        // manager that is really gone ends the server.
+        var unresolved = 0
+        while (true) {
+            // The manager is the package this server's APK belongs to. A server that can't find
+            // it doesn't guess a name: it exits, and the manager starts it again.
+            if (runningManager == null) runningManager = resolveRunningManager()
+            if (runningManager == null) {
+                if (++unresolved > MANAGER_RESOLVE_TRIES) {
+                    LOGGER.e("no package owns the APK this server runs from, exiting")
+                    exitProcess(ServerConstants.MANAGER_APP_NOT_FOUND)
+                }
+                LOGGER.w("can't tell the manager yet, retrying in 1s")
+                Thread.sleep(1000)
+                continue
+            }
+            when (resolveManagerUid()) {
+                MANAGER_UID_MISSING -> exitProcess(ServerConstants.MANAGER_APP_NOT_FOUND)
+                MANAGER_UID_LOOKUP_FAILED -> {
+                    LOGGER.w("can't look up the manager yet, retrying in 1s")
+                    Thread.sleep(1000)
+                }
+                else -> break
+            }
+        }
+        // Service's init already built the env, before PackageManager was waited for: at boot it
+        // found no manager, so it lacks AXERONLIB and LD_LIBRARY_PATH. Built again now.
+        invalidateEnvironment()
+
+        LOGGER.i("manager: %s uid=%d cert=%s", managerPackage, runningManager!!.uid, runningManager!!.certDigest)
 
         if (axCompanion.exists()) {
             shizuku = ShizukuServiceIntercept(this)
         }
 
-        // make ApkChangedObservers lazy or start on-demand; and keep reference to listener so you can stop it
-//        val apkObserver = ApkChangedListener {
-//            if (getManagerApplicationInfo() == null) exitProcess(ServerConstants.MANAGER_APP_NOT_FOUND)
-//        }
-//        ApkChangedObservers.start(ai.sourceDir, mainHandler, apkObserver)
-
-
-        BinderSender.register(asInterface(this))
+        BinderSender.register(this)
 
         mainHandler.post {
             sendBinderToClient()
             sendBinderToManager()
+            // Nothing is published for apps to pick up: each allowed one is handed its capability,
+            // including those already running, which BinderSender only sees on their next change.
+            for (uid in configManager.allowedUids()) pushCapability(uid)
         }
 
-        acquire()
+        // Held from the start; the manager releases it on connect if the user turned it off.
+        synchronized(lockToken) { wakeLockHeld = acquire() }
+
+        startDeathWatchdog()
     }
 
     fun sendBinderToClient() {
         shizukuService?.let {
+            if (isStealth()) {
+                // Only the clients already allowed: the rest aren't told a server is here.
+                for (uid in configManager.allowedUids()) pushShizukuBinder(uid)
+                return
+            }
             for (userId in UserManagerApis.getUserIdsNoThrow()) {
                 sendBinderToClient(it.asBinder(), userId)
+            }
+        }
+    }
+
+    fun isAllowed(uid: Int): Boolean = configManager.find(uid)?.isAllowed == true
+
+    /**
+     * The Shizuku binder to [uid]'s Shizuku clients (packages asking for its permission), while
+     * the intercept is on. For an app just allowed: in stealth it was told nothing before.
+     */
+    fun pushShizukuBinder(uid: Int) {
+        val binder = shizukuService?.asBinder() ?: return
+        val userId = UserHandleCompat.getUserId(uid)
+        for (packageName in PackageManagerApis.getPackagesForUidNoThrow(uid)) {
+            val pi = PackageManagerApis.getPackageInfoNoThrow(
+                packageName, PackageManager.GET_PERMISSIONS.toLong(), userId
+            ) ?: continue
+            if (pi.requestedPermissions?.contains(PERMISSION) == true) {
+                sendBinderToUserApp(binder, packageName, userId)
             }
         }
     }
@@ -403,7 +926,12 @@ open class AxeronService :
         }
     }
 
+    /**
+     * Reached from the manager's toggle and from Shizuku's own "stop" (IShizukuService.exit), so
+     * only the manager or the Shizuku app may switch it; any other Shizuku client is refused.
+     */
     override fun enableShizukuService(enable: Boolean) {
+        enforceManagerPermission("enableShizukuService")
         if (enable) {
             if (axCompanion.createNewFile()) {
                 LOGGER.i("AX-Scope")
@@ -412,10 +940,16 @@ open class AxeronService :
         } else {
             if (axCompanion.delete()) {
                 userServiceManager.removeAllUserService()
+                // Clients keep the old binder alive; make it refuse calls instead of serving on.
+                shizuku?.revoke()
                 shizuku = null
             }
         }
-        sendBinderToManager()
+        mainHandler.post {
+            // Push the Shizuku binder to already-running client apps, not only when they (re)start.
+            sendBinderToClient()
+            sendBinderToManager()
+        }
     }
 
     @Volatile
@@ -427,15 +961,42 @@ open class AxeronService :
         val cached = cachedMergedEnv
         if (cached != null) return cached
 
-        // avoid extra temporary HashMap allocations — rely on Builder to copy if needed
-        val merged = Environment.Builder(true)
-            .putAll(getDefaultEnvironment().envMap) // prefer to pass the map directly
-            .putAll(environmentManager.getAll())    // avoid new HashMap(...)
-            .build()
+        val defaults = getDefaultEnvironment().envMap
+        // Raw: the defaults are built already, a `$` left in one isn't to be replaced again.
+        val builder = Environment.Builder(true).putAllRaw(defaults)
+        // The default env is locked: the user's env adds variables of its own, and only adds to
+        // the path lists of APPEND_ONLY_ENV. A copy of a composed or system value saved in the
+        // editor (an LD_LIBRARY_PATH without the system's paths, a stale AXERONLIB, a broken
+        // BOOTCLASSPATH) can't replace it for every child.
+        val user = HashMap<String, String>()
+        for ((key, value) in environmentManager.getAll()) {
+            when (key) {
+                !in defaults -> user[key] = value
+                in APPEND_ONLY_ENV -> user[key] = withDefault(key, value)
+                else -> {} // the server's or the system's own
+            }
+        }
+        builder.putAll(user)
+        // A plugin's process marker set in the user's env would tag every process as that
+        // plugin's, so stopping it would stop them all. Only plugin code gets it.
+        val merged = HashMap(builder.remove("AXERON_PLUGIN").build().envMap)
+        // Entries added twice (a copy of the default) kept once, at their first place. Not
+        // reordered: the default PATH is already in preferSystemBinaries' order inside $PATH,
+        // and the user's entries stay where they were put, before or after it.
+        for (key in APPEND_ONLY_ENV) {
+            merged[key]?.let { list ->
+                merged[key] = list.split(':').filter { it.isNotEmpty() }.distinct().joinToString(":")
+            }
+        }
+        val built = Environment(merged, true)
 
-        cachedMergedEnv = merged
-        return merged
+        cachedMergedEnv = built
+        return built
     }
+
+    /** [value] with `$key` for the default value, in front when the user's entries lack it. */
+    private fun withDefault(key: String, value: String): String =
+        if ("\$$key" in value.split(':')) value else "\$$key:$value"
 
     private fun getNewEnvironment(): Environment {
         val cached = cachedNewEnv
@@ -456,48 +1017,81 @@ open class AxeronService :
         }
     }
 
+    /**
+     * A failed write reaches the caller as an IllegalStateException, which the binder carries
+     * (a checked IOException it doesn't: the call returned as if it worked). The cached envs are
+     * dropped either way, so what is served matches what the file holds.
+     */
     override fun setNewEnvironment(env: Environment) {
-        environmentManager.replaceAllBlocking(HashMap(env.envMap)) // manager needs mutability
-        // invalidate cached refs deterministically
-        cachedMergedEnv = null
-        cachedNewEnv = null
-        userServiceManager.environment =
-            getEnvironment(TYPE_ENV)?.getEnv()
+        enforceManagerPermission("setNewEnvironment")
+        try {
+            environmentManager.replaceAllBlocking(HashMap(env.envMap)) // manager needs mutability
+        } catch (e: Throwable) {
+            LOGGER.w(e, "setNewEnvironment")
+            throw IllegalStateException("can't save the env: ${e.message ?: e.javaClass.simpleName}")
+        } finally {
+            invalidateEnvironment()
+        }
     }
 
+    override fun setPreferSystemBinaries(prefer: Boolean) {
+        enforceManagerPermission("setPreferSystemBinaries")
+        preferSystemBinaries = prefer
+        invalidateEnvironment()
+    }
+
+    /** Drops every cached env, and hands user services the new one (the new PATH order too). */
+    private fun invalidateEnvironment() {
+        cachedDefaultEnv = null
+        cachedMergedEnv = null
+        cachedNewEnv = null
+        userServiceManager.environment = getEnvironment(TYPE_ENV).env
+    }
+
+    /**
+     * App-ops the manager needs, set like WRITE_SECURE_SETTINGS is granted: WRITE_SETTINGS, and on
+     * MIUI/HyperOS its own ops. Without Autostart there, a manager swiped from recents (which MIUI
+     * kills) can't be woken to hand axsh the server binder. They are app-ops, not runtime
+     * permissions (`pm grant` refuses them), so they go through `cmd appops`, off the binder
+     * thread as that spawns a process.
+     */
+    private fun allowWriteSettings(userId: Int) {
+        Thread {
+            allowManagerAppOp(userId, "WRITE_SETTINGS")
+            val miui = runCatching { SystemProperties.get(MiuiAppOps.VERSION_PROPERTY) }.getOrNull()
+            if (!miui.isNullOrEmpty()) {
+                MiuiAppOps.MANAGER_OPS.forEach { allowManagerAppOp(userId, it.toString()) }
+            }
+        }.start()
+    }
+
+    // Both levels: the mode of the uid is read before the mode of the package, so one set only
+    // at the package can be shadowed by the system's own mode for the uid.
+    private fun allowManagerAppOp(userId: Int, op: String) {
+        for (byUid in listOf(true, false)) {
+            try {
+                val command = mutableListOf("cmd", "appops", "set", "--user", userId.toString())
+                if (byUid) command.add("--uid")
+                command.addAll(listOf(managerPackage, op, "allow"))
+                val code = Runtime.getRuntime().exec(command.toTypedArray()).waitFor()
+                if (code != 0) LOGGER.w("allow %s (%s) exited with %d", op, if (byUid) "uid" else "package", code)
+            } catch (e: Throwable) {
+                LOGGER.w(e, "allow %s (%s)", op, if (byUid) "uid" else "package")
+            }
+        }
+    }
+
+    // Not through checkPermission(): that one is gated, and getServerInfo is open to any caller.
     fun checkRuntime(): Boolean {
-        return checkPermission("android.permission.GRANT_RUNTIME_PERMISSIONS") == PackageManager.PERMISSION_GRANTED
+        if (isRoot) return true
+        return PermissionManagerApis.checkPermission(
+            "android.permission.GRANT_RUNTIME_PERMISSIONS", Os.getuid()
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     @Throws(RemoteException::class)
     override fun getShizukuService(): IShizukuService? {
         return shizuku
-    }
-
-    private var context: WeakReference<Context>? = null
-
-    @Suppress("RECEIVER_NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
-    fun getContext(): Context {
-        if (context == null || context!!.get() == null) {
-            val activityThread = ActivityThread.systemMain()
-            val systemContext: Context? = activityThread.systemContext
-
-            val userHandle = Refine.unsafeCast<UserHandle?>(
-                UserHandleHidden.of(0)
-            )
-            try {
-                context = WeakReference<Context>(
-                    Refine.unsafeCast<ContextHidden>(systemContext).createPackageContextAsUser(
-                        MANAGER_APPLICATION_ID,
-                        Context.CONTEXT_INCLUDE_CODE or Context.CONTEXT_IGNORE_SECURITY,
-                        userHandle
-                    )
-                )
-            } catch (e: PackageManager.NameNotFoundException) {
-                throw RuntimeException(e)
-            }
-        }
-        return context!!.get()!!
     }
 
     override fun newProcess(
@@ -526,6 +1120,66 @@ open class AxeronService :
         return RemoteProcessHolder(process, token)
     }
 
+    override fun newAxshProcess(
+        cmd: Array<out String?>?,
+        env: Array<out String?>?,
+        dir: String?,
+        stdin: ParcelFileDescriptor?,
+        stdout: ParcelFileDescriptor?,
+        stderr: ParcelFileDescriptor?,
+        pty: Boolean,
+        size: Long,
+        status: ParcelFileDescriptor?
+    ): IAxshProcess {
+        // The binder stub has already made these fds in this process. Until PtyHost takes them
+        // they are ours to close: one left open (here a refusal, as before a permission prompt)
+        // holds the client's pipe, so its relay never sees EOF and `axsh -c` never returns.
+        try {
+            enforceCallingPermission("newAxshProcess")
+
+            LOGGER.d(
+                "newAxshProcess: uid=%d, pty=%s, cmd=%s",
+                getCallingUid(),
+                pty.toString(),
+                cmd.contentToString()
+            )
+
+            requireNotNull(stdin) { "stdin" }
+            requireNotNull(stdout) { "stdout" }
+            val argv = cmd?.filterNotNull()?.toTypedArray()
+            require(!argv.isNullOrEmpty()) { "empty command" }
+
+            // As newProcess: an attached app's shells end with it. A broker or bootstrap isn't
+            // attached until it asks for permission; its sessions end with their socket instead.
+            val owner = clientManager.findClient(getCallingUid(), getCallingPid())?.client?.asBinder()
+            return ShellProcess.start(
+                argv, env?.filterNotNull()?.toTypedArray(), dir, stdin, stdout, stderr, pty, size,
+                status, owner
+            )
+        } catch (e: Throwable) {
+            // Already detached ones (PtyHost failed later) close as a no-op. Closing status tells
+            // the caller there is no exit code to wait for.
+            for (fd in arrayOf(stdin, stdout, stderr, status)) {
+                try {
+                    fd?.close()
+                } catch (_: Exception) {
+                }
+            }
+            throw e
+        }
+    }
+
+    override fun getAxshSocketName(): String? {
+        enforceCallingPermission("getAxshSocketName")
+        return axshServer?.socketName
+    }
+
+    override fun openAxshChannel(): ParcelFileDescriptor {
+        enforceCallingPermission("openAxshChannel")
+        val server = checkNotNull(axshServer) { "axsh is not running" }
+        return server.openChannel(getCallingUid())
+    }
+
     override fun getServerInfo(): ServerInfo {
         return ServerInfo(
             VERSION_NAME,
@@ -534,7 +1188,12 @@ open class AxeronService :
             Os.getpid(),
             SELinux.getContext(),
             starting,
-            checkRuntime()
+            checkRuntime(),
+            runningManager?.certDigest.orEmpty(),
+            // Open to any caller, like the rest of the info: it only says whether *this* caller is
+            // the manager. A transaction's caller can't be forged; a local call (the Shizuku
+            // intercept) is the server's own uid, which is not the manager's.
+            isManagerUid(getCallingUid())
         )
     }
 
@@ -547,6 +1206,14 @@ open class AxeronService :
     ) {
 
         LOGGER.i("showPermissionConfirmation")
+        // Stealth: every request lands here (a binder client, a relayed axsh client), and an app the
+        // manager hasn't allowed gets a no instead of a dialog. Read now, so the switch needs no
+        // restart.
+        if (isStealth()) {
+            LOGGER.i("stealth: no dialog for uid %d", callingUid)
+            clientRecord?.dispatchRequestPermissionResult(requestCode, false)
+            return
+        }
         val ai = if (clientRecord != null) {
             PackageManagerApis.getApplicationInfoNoThrow(clientRecord.packageName, 0, userId)
                 ?: return
@@ -557,10 +1224,11 @@ open class AxeronService :
                 packageEntry,
                 packageEntry?.packages
             )
-            if (packageEntry != null && !packageEntry.packages.isNullOrEmpty()) {
-                if (packageEntry.packages.size > 1) throw IllegalStateException("This uid should not have multiple packages")
+            val entryPackages = packageEntry?.packages
+            if (!entryPackages.isNullOrEmpty()) {
+                if (entryPackages.size > 1) throw IllegalStateException("This uid should not have multiple packages")
                 PackageManagerApis.getApplicationInfoNoThrow(
-                    packageEntry.packages.get(0),
+                    entryPackages[0],
                     0,
                     userId
                 )
@@ -569,7 +1237,7 @@ open class AxeronService :
         }
         LOGGER.i("showPermissionConfirmation: %s", ai)
 
-        val pi = PackageManagerApis.getPackageInfoNoThrow(MANAGER_APPLICATION_ID, 0, userId)
+        val pi = PackageManagerApis.getPackageInfoNoThrow(managerPackage, 0, userId)
         val userInfo = UserManagerApis.getUserInfo(userId)
         var isWorkProfileUser = (userInfo.flags and UserInfo.FLAG_MANAGED_PROFILE) != 0
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -586,7 +1254,7 @@ open class AxeronService :
 
         LOGGER.i("Requesting Permission")
         val intent = Intent(ServerConstants.REQUEST_PERMISSION_ACTION)
-            .setPackage(MANAGER_APPLICATION_ID)
+            .setPackage(managerPackage)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
             .putExtra("uid", callingUid)
             .putExtra("pid", callingPid)
@@ -649,12 +1317,16 @@ open class AxeronService :
                 if (allowed) ConfigManager.FLAG_ALLOWED else ConfigManager.FLAG_DENIED
             )
         }
+
+        if (allowed) pushCapability(requestUid)
     }
 
     @Synchronized
     private fun onPermissionRevoked(packageName: String?) {
         userServiceManager.removeUserServicesForPackage(packageName)
     }
+
+    private val managerGrantedUids: MutableSet<Int> = ConcurrentHashMap.newKeySet()
 
     override fun attachApplication(application: IShizukuApplication?, args: Bundle?) {
         if (application == null || args == null) {
@@ -675,7 +1347,25 @@ open class AxeronService :
             throw SecurityException("Request package " + requestPackageName + "does not belong to uid " + callingUid)
         }
 
-        val isManager: Boolean = MANAGER_APPLICATION_ID == requestPackageName
+        // The package alone isn't enough: this seeds the gate's cache and grants the manager's
+        // permissions, so it must be signed like the manager this server started from.
+        val isManager: Boolean = runningManager?.packageName == requestPackageName && managerCertMatches()
+
+        if (isManager) {
+            // Validated above: this uid owns the manager package. Seed the gate's cache from it,
+            // so the manager's first gated calls need no PackageManager look-up; a reinstalled
+            // manager (new uid, new process) refreshes it through this same path.
+            cachedManagerUid = UserHandleCompat.getAppId(callingUid)
+            // A reinstall moves the manager's lib dir, even at the same version (no update, no
+            // restart): AXERONLIB, and LD_LIBRARY_PATH with it, follow it for new processes.
+            val libDir = getManagerApplicationInfo()?.nativeLibraryDir
+            if (libDir != null && libDir != cachedDefaultEnv?.envMap?.get("AXERONLIB")) {
+                invalidateEnvironment()
+            }
+        } else if (SHIZUKU_MANAGER_APPLICATION_ID == requestPackageName) {
+            // Same for the Shizuku app, whose calls go through the intercept.
+            cachedShizukuManagerUid = UserHandleCompat.getAppId(callingUid)
+        }
 
         if (clientManager.findClient(callingUid, callingPid) == null) {
             synchronized(this) {
@@ -710,6 +1400,7 @@ open class AxeronService :
         }
 
         val reply = Bundle()
+        reply.putInt(AxeronApiConstant.server.BIND_APPLICATION_CLIENT_UID, callingUid)
         reply.putInt(BIND_APPLICATION_SERVER_UID, OsUtils.getUid())
         reply.putInt(BIND_APPLICATION_SERVER_VERSION, replyServerVersion)
         reply.putString(
@@ -718,7 +1409,15 @@ open class AxeronService :
         )
         reply.putInt(
             BIND_APPLICATION_SERVER_PATCH_VERSION,
-            SHIZUKU_SERVER_PATCH_VERSION
+            // The Shizuku app shows the server as "<api>.<patch>" and can't show text, so the
+            // patch carries AxManager's version code as a hint that AxManager is serving it
+            // (e.g. "13.14800"). It no longer matches, so the app shows its "update" note.
+            // Other clients keep the real patch: they never display it.
+            if (requestPackageName == SHIZUKU_MANAGER_APPLICATION_ID) {
+                VERSION_CODE.toInt()
+            } else {
+                SHIZUKU_SERVER_PATCH_VERSION
+            }
         )
         if (!isManager) {
             reply.putBoolean(
@@ -730,13 +1429,19 @@ open class AxeronService :
                 false
             )
         } else {
-            try {
-                PermissionManagerApis.grantRuntimePermission(
-                    MANAGER_APPLICATION_ID,
-                    WRITE_SECURE_SETTINGS, UserHandleCompat.getUserId(callingUid)
-                )
-            } catch (e: RemoteException) {
-                LOGGER.w(e, "grant WRITE_SECURE_SETTINGS")
+            val userId = UserHandleCompat.getUserId(callingUid)
+            // Once per manager uid for this server: they last, and every manager process
+            // attaches. By uid, so a reinstalled manager (new uid) is granted again.
+            if (managerGrantedUids.add(callingUid)) {
+                try {
+                    PermissionManagerApis.grantRuntimePermission(
+                        managerPackage,
+                        WRITE_SECURE_SETTINGS, userId
+                    )
+                } catch (e: Throwable) {
+                    LOGGER.w(e, "grant WRITE_SECURE_SETTINGS")
+                }
+                allowWriteSettings(userId)
             }
         }
         try {
@@ -746,12 +1451,21 @@ open class AxeronService :
         }
     }
 
+    // The caches are volatile, so a reset from BinderSender's thread is seen by binder threads.
     @Throws(RemoteException::class)
     override fun dispatchPackageChanged(intent: Intent?) {
+        // Manager / Shizuku-manager uid may have changed on (re)install. The manager's own uid is
+        // seeded again by attachApplication, before it can make a gated call.
+        cachedManagerUid = MANAGER_UID_UNKNOWN
+        cachedShizukuManagerUid = MANAGER_UID_UNKNOWN
     }
 
     override fun exit() {
-        release()
+        // Before the release: a refused caller must not drop the wakelock on its way out.
+        enforceManagerPermission("exit")
+        synchronized(lockToken) {
+            if (wakeLockHeld && release()) wakeLockHeld = false
+        }
         super.exit()
     }
 
@@ -765,48 +1479,38 @@ open class AxeronService :
             users.add(userId)
         }
 
+        // Only the Shizuku app reads this list (AxManager's Privilege screen lists apps itself),
+        // so it follows upstream Shizuku: apps that already have a permission entry, plus apps
+        // built on Shizuku-API (V3_SUPPORT meta-data and the API_V23 permission).
         for (user in users) {
             val packages = PackageManagerApis.getInstalledPackagesNoThrow(
                 (PackageManager.GET_META_DATA or PackageManager.GET_PERMISSIONS).toLong(),
                 user
-            ).filter {
-                val isSystem =
-                    it.applicationInfo!!
-                        .flags.and(ApplicationInfo.FLAG_SYSTEM) != 0
+            )
 
-                val isSelf = it.packageName == MANAGER_APPLICATION_ID
-                val isShizukuSelf = it.packageName == SHIZUKU_MANAGER_APPLICATION_ID
+            for (pi in packages) {
+                if (pi.packageName == managerPackage) continue
+                if (pi.packageName == SHIZUKU_MANAGER_APPLICATION_ID) continue
 
-                !isSystem && !isSelf&& !isShizukuSelf
+                val appInfo = pi.applicationInfo ?: continue
+                val uid = appInfo.uid
+
+                val entry = configManager.find(uid)
+                val flags = entry?.let {
+                    val entryPackages = it.packages
+                    if (entryPackages != null && !entryPackages.contains(pi.packageName)) {
+                        return@let 0 // entry belongs to another package of a shared uid
+                    }
+                    it.flags and ConfigManager.MASK_PERMISSION
+                } ?: 0
+
+                when {
+                    flags != 0 -> list.add(pi)
+
+                    appInfo.metaData?.getBoolean("moe.shizuku.client.V3_SUPPORT", false) == true &&
+                            pi.requestedPermissions?.contains(PERMISSION) == true -> list.add(pi)
+                }
             }
-
-            list.addAll(packages)
-
-//            for (pi in packages) {
-//                if (pi.packageName == MANAGER_APPLICATION_ID) continue
-//
-//                val appInfo = pi.applicationInfo ?: continue
-//                val uid = appInfo.uid
-//
-//                val entry = configManager.find(uid)
-//                val flags = entry?.let {
-//                    if (it.packages != null && !it.packages.contains(pi.packageName)) {
-//                        return@let 0 // skip by flags=0
-//                    }
-//                    it.flags and ConfigManager.MASK_PERMISSION
-//                } ?: 0
-//
-//                when {
-//                    flags != 0 -> {
-//                        list.add(pi)
-//                    }
-//
-//                    appInfo.metaData?.getBoolean("moe.shizuku.client.V3_SUPPORT", false) == true &&
-//                            pi.requestedPermissions?.contains(PERMISSION) == true -> {
-//                        list.add(pi)
-//                    }
-//                }
-//            }
         }
 
         return ParcelableListSlice(list)
@@ -825,7 +1529,7 @@ open class AxeronService :
         return super.onTransact(code, data, reply, flags)
     }
 
-    @Synchronized
+    // configManager.find() takes the config's own lock.
     private fun getFlagsForUidInternal(uid: Int, mask: Int): Int {
         val entry: AxeronConfig.PackageEntry? = configManager.find(uid)
         if (entry != null) {
@@ -840,6 +1544,18 @@ open class AxeronService :
             return 0
         }
         return getFlagsForUidInternal(uid, mask)
+    }
+
+    override fun getFlagsForUids(uids: IntArray, mask: Int): IntArray {
+        if (!checkCaller(getCallingUid())) {
+            LOGGER.w("getFlagsForUids is allowed to be called only from the manager")
+            return IntArray(uids.size)
+        }
+        val result = IntArray(uids.size)
+        for (i in uids.indices) {
+            result[i] = getFlagsForUidInternal(uids[i], mask)
+        }
+        return result
     }
 
     @Throws(RemoteException::class)
@@ -869,6 +1585,29 @@ open class AxeronService :
             }
         }
 
+        val keepAlive = mask and KeepAlive.MASK
+        if (keepAlive != 0) {
+            // With its packages: an entry without them is dropped as stale on the next start, and
+            // a terminal app like Termux has none until it asks for the permission.
+            configManager.findOrUpdate(uid)
+        }
+        val keepAliveBefore = getFlagsForUidInternal(uid, KeepAlive.MASK)
+
         configManager.update(uid, null, mask, value)
+        if ((mask and value and ConfigManager.FLAG_ALLOWED) != 0) {
+            pushCapability(uid)
+            // In stealth its Shizuku clients were told nothing until now.
+            if (isStealth()) mainHandler.post { pushShizukuBinder(uid) }
+        } else if ((mask and ConfigManager.MASK_PERMISSION) != 0) {
+            // No longer allowed: its axsh daemon goes too, rather than keep a way in it no
+            // longer has. The next command finds the door as any app not allowed does.
+            axshServer?.closeChannels(uid)
+        }
+
+        // The app's daemon runs with the setting it was started with: end it, and the next
+        // command starts one with this.
+        if (keepAlive != 0 && getFlagsForUidInternal(uid, KeepAlive.MASK) != keepAliveBefore) {
+            axshServer?.closeChannels(uid)
+        }
     }
 }

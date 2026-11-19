@@ -5,8 +5,12 @@ import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.TextFieldValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -14,15 +18,33 @@ import frb.axeron.api.Axeron
 import frb.axeron.api.AxeronCommandSession
 import frb.axeron.api.core.AxeronSettings
 import frb.axeron.api.utils.AnsiFilter
-import frb.axeron.axerish.R
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.launch
+import frb.axeron.manager.R
+import frb.axeron.manager.ui.util.TerminalBuffer
+import java.io.File
 
 class QuickShellViewModel(application: Application) : AndroidViewModel(application) {
 
     var session: AxeronCommandSession = AxeronCommandSession()
-    private var savedCommand: TextFieldValue? = null
+
+    /**
+     * The command being typed. A TextFieldState (not a TextFieldValue) so the input can show
+     * its scroll position. Edit it on the main thread only: see [onMain].
+     */
+    val commandInput = TextFieldState()
+
+    /** The command that started the running process, put back in the input when it ends. */
+    private var savedCommand: String? = null
+
+    /** Process callbacks come from session threads; the input may only change on main. */
+    private fun onMain(block: () -> Unit) {
+        viewModelScope.launch(Dispatchers.Main.immediate) { block() }
+    }
+
+    // Lives here, not in the screen, so the log survives leaving and re-entering QuickShell.
+    val terminal = TerminalBuffer<OutputType>(
+        spoolDir = File(application.cacheDir, "terminal"),
+        unlimited = true
+    )
 
     init {
         session.setProcessListener(object : AxeronCommandSession.ProcessListener {
@@ -33,8 +55,10 @@ class QuickShellViewModel(application: Application) : AndroidViewModel(applicati
                     append(OutputType.TYPE_COMMAND, command.trim())
                 } else append(OutputType.TYPE_COMMAND, "[command] ${command.trim()}")
                 append(OutputType.TYPE_START, "[start] pid=$pid")
-                savedCommand = TextFieldValue(text = command, selection = TextRange(command.length))
-                commandText = TextFieldValue("") // clear input
+                // `clear`/`top` redraws wipe this command's output only, not the session log.
+                terminal.markScreenStart()
+                savedCommand = command
+                onMain { commandInput.clearText() } // now it takes the process's input
                 execMode = "Inputs"
                 isRunning = true
             }
@@ -43,35 +67,34 @@ class QuickShellViewModel(application: Application) : AndroidViewModel(applicati
                 Log.i("QuickShellViewModel", "onProcessRunning: $input")
                 val tagInput = if (input.lines().size > 1) "[input]\n" else "[input] "
                 append(OutputType.TYPE_STDIN, tagInput + input.trim())
-                commandText = TextFieldValue("")
+                onMain { commandInput.clearText() }
+            }
+
+            override fun onProcessBackground(pids: IntArray) {
+                append(OutputType.TYPE_START, "[background] pid=${pids.joinToString(",")}")
             }
 
             override fun onProcessFinished(exitCode: Int, lastOutput: String) {
                 Log.i("QuickShellViewModel", "onProcessFinished: $exitCode")
+                terminal.endStreams()
                 if (!AnsiFilter.isScreenControl(lastOutput)) {
                     append(OutputType.TYPE_EXIT, "[exit] code=$exitCode")
                     append(OutputType.TYPE_SPACE, "")
                 }
                 execMode = "Commands"
-                if (savedCommand != null) {
-                    commandText = savedCommand!!
-                    savedCommand = null
-                }
+                savedCommand?.let { saved -> onMain { commandInput.setTextAndPlaceCursorAtEnd(saved) } }
+                savedCommand = null
                 isRunning = false
             }
         })
 
         session.setResultListener(object : AxeronCommandSession.ResultListener {
             override fun output(output: CharSequence?) {
-                output?.let {
-                    append(OutputType.TYPE_STDOUT, it.toString())
-                }
+                output?.let { terminal.write(OutputType.TYPE_STDOUT, it.toString()) }
             }
 
             override fun onError(error: CharSequence?) {
-                error?.let {
-                    append(OutputType.TYPE_STDERR, it.toString())
-                }
+                error?.let { terminal.write(OutputType.TYPE_STDERR, it.toString()) }
             }
 
         })
@@ -95,15 +118,19 @@ class QuickShellViewModel(application: Application) : AndroidViewModel(applicati
         VOLUME_DOWN(R.string.volume_down)
     }
 
-    data class Output(val type: OutputType, var output: String, var completed: Boolean = false)
 
     var isShellRestrictionEnabled: Boolean by mutableStateOf(
         prefs.getBoolean("shell_restriction", true)
     )
         private set
 
+    init {
+        session.setRestrictBackground(isShellRestrictionEnabled)
+    }
+
     fun setShellRestriction(enable: Boolean) {
         isShellRestrictionEnabled = enable
+        session.setRestrictBackground(enable)
         prefs.edit {
             putBoolean("shell_restriction", enable)
         }
@@ -122,28 +149,24 @@ class QuickShellViewModel(application: Application) : AndroidViewModel(applicati
     }
 
 
-    private val _output = MutableSharedFlow<Output>(extraBufferCapacity = 64)
-    val output: SharedFlow<Output> = _output
-
     var isRunning by mutableStateOf(false)
-        private set
-
-    var commandText by mutableStateOf(TextFieldValue(""))
-        private set
-
-    var clear by mutableStateOf(false)
         private set
 
     var execMode by mutableStateOf("Commands")
         private set
 
-    fun setCommand(text: TextFieldValue) {
-        commandText = text
+    /** Replaces the whole input, cursor at the end. Main thread. */
+    fun setCommand(text: String) = commandInput.setTextAndPlaceCursorAtEnd(text)
+
+    /** Puts [text] in place of the selection (or at the cursor), cursor after it. Main thread. */
+    fun insertCommand(text: String) = commandInput.edit {
+        val start = selection.min
+        replace(start, selection.max, text)
+        selection = TextRange(start + text.length)
     }
 
     fun clear() {
-        //make a toggle state
-        clear = !clear
+        terminal.clear()
     }
 
     fun stop() {
@@ -151,21 +174,21 @@ class QuickShellViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun runShell() {
-        val cmd = commandText.text.ifBlank { return }
+        val cmd = commandInput.text.toString().ifBlank { return }
+            .replace(Regex("(?i)adb\\s+shell\\s+"), "")
             .replace(Regex("[^\\p{Print}\\n]"), "") // sanitize
 
         session.runCommand(cmd, isCompatModeEnabled)
     }
 
     private fun append(type: OutputType, output: String) {
-        viewModelScope.launch {
-            _output.emit(Output(type, output))
-        }
+        terminal.appendLine(type, output)
     }
 
     override fun onCleared() {
         super.onCleared()
         if (Axeron.pingBinder()) stop()
+        terminal.close()
     }
 }
 
