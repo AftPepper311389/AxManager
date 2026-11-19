@@ -115,8 +115,8 @@
 <string name="auto_enable_plugin">Ativado automaticamente após instalação</string>
 <string name="manual_enable_plugin">Permanecerá desativado</string>
 <string name="log_error_code">Código de erro: %1$d.\n %2$s Por favor, salve e verifique o log.\n</string>
-<string name="re_ignite_and_close"><![CDATA[Re-ignitar &amp; Fechar]]></string>
-<string name="restart_and_close"><![CDATA[Reiniciar &amp; Fechar]]></string>
+<string name="re_ignite_and_close">Re-ignitar &amp; Fechar</string>
+<string name="restart_and_close">Reiniciar &amp; Fechar</string>
 <string name="flashing">Gravando</string>
 <string name="success">Sucesso</string>
 <string name="failed">Falhou</string>
