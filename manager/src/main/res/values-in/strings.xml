@@ -173,7 +173,7 @@
     <string name="privilege_access_ask">Tanya (default)</string>
     <string name="privilege_access_denied">Ditolak</string>
     <string name="privilege_access_allowed_desc">Memakai environment Axeron tanpa bertanya.</string>
-    <string name="privilege_access_ask_desc">Bertanya setiap kali meminta akses; "izinkan sekali" berlaku sampai app ditutup.</string>
+    <string name="privilege_access_ask_desc">Bertanya setiap kali meminta akses; \"izinkan sekali\" berlaku sampai app ditutup.</string>
     <string name="privilege_access_denied_desc">Langsung ditolak, tanpa dialog.</string>
     <string name="privilege_access_sheet_desc">Apa yang terjadi saat app ini meminta memakai environment Axeron. Keluar dari Diizinkan akan menghentikan app.</string>
     <string name="privilege_launch">Buka app</string>
