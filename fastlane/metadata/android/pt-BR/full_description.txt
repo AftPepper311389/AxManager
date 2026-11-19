@@ -1,0 +1,43 @@
+**Status: Desenvolvimento Inicial / Beta**
+
+*Observação: Este projeto está atualmente em fase experimental. Os recursos estão sujeitos a alterações.*
+
+**AxManager** é uma ferramenta de gerenciamento do sistema projetada para fornecer controle mais profundo sobre aplicativos Android e configurações do sistema.
+
+Diferente dos "Gerenciadores" tradicionais como KernelSU que exigem estritamente root, o AxManager foi construído com uma filosofia **Sem Root / Primeiro ADB**. Ele permite aos usuários executar comandos shell e gerenciar parâmetros do sistema usando Depuração Sem Fio ou Shizuku, enquanto ainda permite execução com **acesso Root** se disponível.
+
+**Recursos**
+
+- **Executor de Shell:** Execute comandos shell diretamente do aplicativo. Suporta execução via ADB/Sem Root e alterna perfeitamente para execução Root se disponível.
+
+- **Sistema de Plugins:** Gerencie módulos de terceiros para estender a funcionalidade do dispositivo sem modificar a partição do sistema e sem acesso root.
+
+- **WebUI:** Execute comandos shell usando uma interface interativa baseada na web. Saiba Mais
+
+**Por que AxManager?**
+
+- **Não Requer Root:** Totalmente funcional em bootloaders bloqueados ou dispositivos onde aplicativos bancários devem permanecer intactos.
+
+- **Compatibilidade Universal:** Utilizável em uma gama mais ampla de dispositivos comparado a gerenciadores que exigem apenas root.
+
+- **Seguro e Reversível:** Como opera principalmente via shell ADB, as mudanças são geralmente menos arriscadas do que modificar a partição do sistema.
+
+**Avisos e Créditos**
+
+Este projeto é de código aberto e inclui código adaptado de projetos renomados para lidar com IPC Android e permissões ADB:
+
+- **Magisk:** Inspiração para BusyBox e manipulação de módulos.
+
+- **Shizuku / API:** Utilizado para lógica de manipulação de permissões/ADB. (Apache 2.0)
+
+- **KernelSU / Next:** Inspiração para o design da UI/UX.
+
+*AxManager é um projeto independente e não é afiliado ao Shizuku ou KernelSU.*
+
+**Links**
+
+Código Fonte
+
+Rastreador de Problemas
+
+Website
