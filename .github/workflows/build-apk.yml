@@ -104,6 +104,12 @@ jobs:
           path: build.log
           retention-days: 7
       
+      - name: Fail the job if build failed
+        if: steps.build.outputs.exit_code != '0'
+        run: |
+          echo "❌ Gradle build failed (exit ${{ steps.build.outputs.exit_code }}); see build-log artifact."
+          exit 1
+
       - name: Check build output
         run: |
           echo "=== Looking for APK files ==="
@@ -122,5 +128,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: manager-debug-apk
-          path: manager/build/outputs/apk/debug/manager-debug.apk
+          path: manager/build/outputs/apk/debug/*.apk
           retention-days: 30
