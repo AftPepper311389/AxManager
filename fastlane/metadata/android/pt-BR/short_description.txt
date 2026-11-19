@@ -1,0 +1,1 @@
+AxManager é um aplicativo Android que oferece controle mais profundo sobre apps e o sistema.
