@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK (Debug Mode)
 
 on:
   push:
@@ -25,13 +25,22 @@ jobs:
       
       - name: Verify submodules
         run: |
-          echo "Checking api submodule..."
-          if [ -d "api" ] && [ -f "api/manifest.gradle.kts" ]; then
-            echo "✅ API submodule initialized successfully"
-            cat api/manifest.gradle.kts | head -5
+          echo "=== Checking api submodule ==="
+          if [ -d "api" ]; then
+            echo "✅ api directory exists"
+            ls -la api/ | head -10
+            if [ -f "api/manifest.gradle.kts" ]; then
+              echo "✅ manifest.gradle.kts found"
+              echo "Content preview:"
+              cat api/manifest.gradle.kts
+            else
+              echo "❌ manifest.gradle.kts NOT found"
+              exit 1
+            fi
           else
-            echo "❌ API submodule not found or incomplete"
-            ls -la api/ 2>/dev/null || echo "api directory doesn't exist"
+            echo "❌ api directory does NOT exist"
+            echo "Current directory contents:"
+            ls -la
             exit 1
           fi
       
@@ -50,17 +59,66 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       
-      - name: Clean and Build Debug APK
+      - name: Check Gradle version
+        run: ./gradlew --version
+      
+      - name: Clean project
+        run: ./gradlew clean
+      
+      - name: Build Debug APK with full logging
+        id: build
+        continue-on-error: true
         run: |
-          ./gradlew clean :manager:assembleDebug --no-daemon --stacktrace --info
+          echo "Starting build..."
+          ./gradlew :manager:assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            --info \
+            2>&1 | tee build.log
+          
+          BUILD_EXIT_CODE=${PIPESTATUS[0]}
+          echo "Build exit code: $BUILD_EXIT_CODE"
+          echo "exit_code=$BUILD_EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          if [ $BUILD_EXIT_CODE -ne 0 ]; then
+            echo "❌ Build failed with exit code $BUILD_EXIT_CODE"
+          else
+            echo "✅ Build succeeded"
+          fi
+      
+      - name: Show last 100 lines of build log on failure
+        if: steps.build.outputs.exit_code != '0'
+        run: |
+          echo "=== LAST 100 LINES OF BUILD LOG ==="
+          tail -n 100 build.log
+          
+          echo ""
+          echo "=== SEARCHING FOR ERROR PATTERNS ==="
+          grep -i "error\|exception\|failed\|cannot" build.log | tail -20 || echo "No obvious errors found in log"
+      
+      - name: Upload build log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 7
       
       - name: Check build output
         run: |
-          echo "Build artifacts:"
-          find manager/build/outputs/apk -name "*.apk" -type f 2>/dev/null || echo "No APK found"
+          echo "=== Looking for APK files ==="
+          find . -name "*.apk" -type f 2>/dev/null || echo "No APK files found"
+          
+          echo ""
+          echo "=== manager/build/outputs/apk contents ==="
+          if [ -d "manager/build/outputs/apk" ]; then
+            find manager/build/outputs/apk -type f
+          else
+            echo "APK output directory does not exist"
+          fi
       
       - name: Upload APK artifact
-        if: success()
+        if: steps.build.outputs.exit_code == '0'
         uses: actions/upload-artifact@v4
         with:
           name: manager-debug-apk
