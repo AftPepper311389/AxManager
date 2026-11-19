@@ -23,7 +23,11 @@ android {
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("frb-project")
+            // CI / fresh clones have no local.properties signing keys; fall back to
+            // the default debug keystore so assembleDebug works out of the box.
+            val frbSigning = signingConfigs.getByName("frb-project")
+            signingConfig = if (frbSigning.storeFile != null) frbSigning
+                else signingConfigs.getByName("debug")
         }
         release {
             signingConfig = signingConfigs.getByName("frb-project")
