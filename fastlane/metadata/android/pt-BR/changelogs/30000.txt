@@ -1,0 +1,71 @@
+# AxManager 3.0.0
+
+Uma versão de segurança. Cada rota para o shell do AxManager agora passa pela sua permissão, por aplicativo.
+
+> [!AVISO]
+
+> Aplicativos construídos na API Axeron (`axsh`) 2.x não podem se conectar à versão 3.0. Eles precisam do `axsh` 3.0.0 ou posterior.
+
+> Aplicativos construídos na Shizuku-API não são afetados.
+
+## Segurança
+
+- **Cada aplicativo obtém seu próprio acesso.** O binder do servidor vai apenas para o AxManager; todos os outros aplicativos recebem uma capacidade que funciona apenas para seu uid e para no momento em que você revoga.
+
+- **Gerenciador identificado pelo seu APK e certificado**, não por um nome de pacote. O nome do pacote do app Shizuku não concede mais direitos de gerenciador fora da compatibilidade Shizuku.
+
+- **Concessões vinculadas ao certificado de assinatura do app.** Um aplicativo que herda o uid de um desinstalado, ou o mesmo app reassinado com outra chave, será solicitado novamente.
+
+- **WebUI:** outros sites abrem no navegador, e páginas de plugins são servidas com CSP, então nenhum outro site pode ser emoldurado ou postado e alcançar as pontes do shell.
+
+- **Socket axsh:** nome aleatório por início do servidor, informado apenas a apps permitidos; clientes aceitam apenas de root ou shell.
+
+- Aplicativos não podem mais se passar pelo servidor para outros apps.
+
+## Novo
+
+- **Modo AX-Stealth** (Configurações → Ambiente): aplicativos que você não permitiu não recebem diálogo nem resposta, como se o AxManager não estivesse instalado. Inclui clientes Shizuku.
+
+- **Solicitar acesso:** aplicativos que ainda não foram permitidos abrem o diálogo de permissão do AxManager.
+
+- **Iniciar após reinicialização** através de um serviço watchdog que aguarda Wi-Fi e mostra cada etapa de ativação em uma notificação.
+
+- **Emblema de assinatura** na Página Inicial, com folha de detalhes.
+
+- Linhas de configurações podem se explicar atrás de um ícone de informação.
+
+## Ativação
+
+- Início sem fio aguarda Wi-Fi (abre o painel de Wi-Fi) e sempre passa pela depuração sem fio.
+
+- Opções de desenvolvedor, depuração USB e depuração sem fio são ativadas juntas.
+
+- Configurações de desenvolvedor abrem diretamente nas Configurações, sem mais seletor "Abrir com".
+
+- Ativar mostra se as configurações Seguras e do Sistema podem ser gravadas.
+
+- Modo TCP só alterna adbd para tcpip quando realmente necessário.
+
+## Correções
+
+- Builds de release: o servidor podia falhar ao entregar seu binder ao AxManager (R8 removeu uma classe).
+
+- Editor de configurações redesenha uma linha quando seu valor muda.
+
+- Área de toque do emblema de assinatura segue sua forma de pílula.
+
+## Plugins
+
+- `axeronPlugin=30000`. Páginas WebUI podem alcançar apenas as origens do próprio plugin.
+
+## Website
+
+- axmanager.app é o site oficial.
+
+- Nova página **Segurança na 3.0**; páginas longas divididas; barra lateral reagrupada.
+
+- Exemplos Kotlin e Java em Conectar com um App.
+
+- Tudo também em Chinês Simplificado.
+
+**Changelog Completo**: https://github.com/fahrez182/AxManager/compare/v2.1.0...v3.0.0
