@@ -3,7 +3,7 @@
 
 <string name="app_name">AxManager</string>
 <string name="home_running">Executando</string>
-<string name="notification_warn_miui">Usuários MIUI podem precisar mudar o estilo de notificação para "Android" em "Notificação" - "Painel de notificações" nas configurações do sistema.</string>
+<string name="notification_warn_miui">Usuários MIUI podem precisar mudar o estilo de notificação para \"Android\" em \"Notificação\" - \"Painel de notificações\" nas configurações do sistema.</string>
 <string name="notification_warn_miui_2">Caso contrário, você pode não conseguir inserir o código de pareamento pela notificação.</string>
 <string name="global_settings">Configurações Globais</string>
 <string name="secure_settings">Configurações Seguras</string>
@@ -73,7 +73,7 @@
 <string name="connect_tcp_debugging">Conectar ao TCP</string>
 <string name="stop_tcp_debugging">Parar TCP</string>
 <string name="enable_wireless_debugging">Ativar Depuração Sem Fio</string>
-<string name="enable_wireless_debugging_msg">Por favor, ative "Depuração sem fio" em "Opções do desenvolvedor". A "Depuração sem fio" é automaticamente desativada quando a rede muda.\n\nNota: não desative "Opções do desenvolvedor" ou "Depuração USB", ou o AxManager será parado.</string>
+<string name="enable_wireless_debugging_msg">Por favor, ative \"Depuração sem fio\" em \"Opções do desenvolvedor\". A \"Depuração sem fio\" é automaticamente desativada quando a rede muda.\n\nNota: não desative \"Opções do desenvolvedor\" ou \"Depuração USB\", ou o AxManager será parado.</string>
 <string name="open_developer_opt">Desenvolvedor</string>
 <string name="step_by_step">Passo a Passo</string>
 <string name="instruction">Instrução</string>
@@ -127,7 +127,7 @@
 <string name="learn_more_msg">Aprenda como usar o AxManager e como criar um plugin</string>
 <string name="updating">Atualizando…</string>
 <string name="server_updating_version" formatted="false"><![CDATA[Atualizando: %d > %d]]></string>
-<string name="version_pid" formatted="false">Versão: %d \| Pid: %d</string>
+<string name="version_pid" formatted="false">Versão: %d | Pid: %d</string>
 <string name="day_singular">Dia</string>
 <string name="day_plural">Dias</string>
 <string name="home_need_fix">Precisa de etapa extra</string>
@@ -175,7 +175,7 @@
 <string name="privilege_access_ask">Perguntar (padrão)</string>
 <string name="privilege_access_denied">Negado</string>
 <string name="privilege_access_allowed_desc">Usa o ambiente Axeron sem perguntar.</string>
-<string name="privilege_access_ask_desc">Pergunta cada vez que solicita acesso; "permitir uma vez" dura até o app ser fechado.</string>
+<string name="privilege_access_ask_desc">Pergunta cada vez que solicita acesso; \"permitir uma vez\" dura até o app ser fechado.</string>
 <string name="privilege_access_denied_desc">Recusado imediatamente, sem diálogo.</string>
 <string name="privilege_access_sheet_desc">O que acontece quando este app pede para usar o ambiente Axeron. Deixar Permitido para o app.</string>
 <string name="privilege_launch">Abrir app</string>
@@ -212,14 +212,14 @@
 <string name="shortcut_updated">Atalho atualizado</string>
 <string name="shortcut_not_supported">Seu launcher não suporta atalhos fixados</string>
 <string name="shortcut_failed">Não foi possível adicionar o atalho</string>
-<string name="shortcut_added">"%s" adicionado à tela inicial</string>
+<string name="shortcut_added">\"%s\" adicionado à tela inicial</string>
 <string name="shortcut_plugin_uninstalled">Este plugin foi desinstalado</string>
 <string name="webui_service_not_running">AxManager ainda não está ativo</string>
 <string name="webui_plugin_removed">Este plugin está sendo removido</string>
 <string name="webui_plugin_disabled">Este plugin está desativado</string>
 <string name="webui_plugin_no_webui">Este plugin não tem WebUI</string>
 <string name="shortcut_permission_title">Permitir atalhos na tela inicial</string>
-<string name="shortcut_permission_msg">Seu sistema está bloqueando o AxManager de adicionar atalhos à tela inicial. Abra as configurações de permissão do AxManager, permita "Atalhos na tela inicial", e tente novamente.</string>
+<string name="shortcut_permission_msg">Seu sistema está bloqueando o AxManager de adicionar atalhos à tela inicial. Abra as configurações de permissão do AxManager, permita \"Atalhos na tela inicial\", e tente novamente.</string>
 <string name="boot_watchdog_channel">Iniciar após reinicialização</string>
 <string name="boot_watchdog_title">Iniciando AxManager</string>
 <string name="boot_watchdog_progress">Etapa %1$d de %2$d</string>
@@ -282,7 +282,7 @@
 <string name="otg_not_supported">Este telefone não suporta host USB (OTG).</string>
 <string name="otg_open">Iniciar OTG</string>
 <string name="otg_steps_title">No outro telefone</string>
-<string name="otg_steps">1. Instale o AxManager\n2. Ligue a depuração USB\n3. Abra Ativar via OTG lá e escolha Alvo (mostra seu progresso)\n4. Conecte ambos os telefones com cabo OTG\n5. Toque em "Permitir" quando perguntado sobre depuração USB</string>
+<string name="otg_steps">1. Instale o AxManager\n2. Ligue a depuração USB\n3. Abra Ativar via OTG lá e escolha Alvo (mostra seu progresso)\n4. Conecte ambos os telefones com cabo OTG\n5. Toque em \"Permitir\" quando perguntado sobre depuração USB</string>
 <string name="otg_sheet_desc">Abra isto em ambos os telefones e escolha um papel em cada: o computador ativa o alvo.</string>
 <string name="otg_role_title">Este telefone</string>
 <string name="otg_role_computer">Computador</string>
@@ -291,12 +291,12 @@
 <string name="otg_role_target_desc">É ativado</string>
 <string name="otg_role_unsupported">Sem suporte a host USB</string>
 <string name="otg_target_only">Este telefone só pode ser o alvo (sem suporte a host USB).</string>
-<string name="otg_no_device_hint">Usando cabo USB-C para USB-C? O outro telefone pode ter se tornado o host. Abra a notificação USB em qualquer telefone e defina "USB controlado por" para que este telefone esteja no controle.</string>
+<string name="otg_no_device_hint">Usando cabo USB-C para USB-C? O outro telefone pode ter se tornado o host. Abra a notificação USB em qualquer telefone e defina \"USB controlado por\" para que este telefone esteja no controle.</string>
 <string name="otg_target_status_waiting">Aguardando o telefone computador…</string>
 <string name="otg_target_status_linked">Conectado — aguardando ativação</string>
 <string name="otg_target_status_host">Este telefone se tornou o host USB</string>
 <string name="otg_target_status_done">AxManager está ativo neste telefone</string>
-<string name="otg_target_host_warning">O outro telefone deve estar no controle do USB. Abra a notificação USB e defina "USB controlado por" para o dispositivo conectado.</string>
+<string name="otg_target_host_warning">O outro telefone deve estar no controle do USB. Abra a notificação USB e defina \"USB controlado por\" para o dispositivo conectado.</string>
 <string name="otg_target_check_debugging">Depuração USB está ligada</string>
 <string name="otg_target_check_debugging_off">Depuração USB está desligada</string>
 <string name="otg_target_open_dev">Abrir</string>
@@ -360,9 +360,9 @@
 <string name="settings_env_ref_kept">Sempre mantido</string>
 <string name="settings_env_ref_desc">$%1$s representa o %1$s padrão que AxManager e Android definem, listado abaixo em ordem. Não pode ser removido: suas entradas só vão antes ou depois dele.</string>
 <string name="settings_env_before">Antes de $%1$s</string>
-<string name="settings_env_before_hint">Procurado primeiro, antes do padrão. Separe entradas com ":".</string>
+<string name="settings_env_before_hint">Procurado primeiro, antes do padrão. Separe entradas com \":\".</string>
 <string name="settings_env_after">Depois de $%1$s</string>
-<string name="settings_env_after_hint">Procurado por último, depois do padrão. Separe entradas com ":".</string>
+<string name="settings_env_after_hint">Procurado por último, depois do padrão. Separe entradas com \":\".</string>
 <string name="settings_env_badge_locked">Bloqueado</string>
 <string name="settings_env_badge_before">+%d antes</string>
 <string name="settings_env_badge_after">+%d depois</string>
@@ -382,7 +382,7 @@
 <string name="failed_to_start">Falha ao iniciar</string>
 <string name="activate_success">Ativado com Sucesso</string>
 <string name="please_wait">Por favor, aguarde…</string>
-<string name="view_command_message">\`%s\`\n\nHá algumas outras considerações, confirme que leu a ajuda primeiro.</string>
+<string name="view_command_message">`%s`\n\nHá algumas outras considerações, confirme que leu a ajuda primeiro.</string>
 <string name="activate_by_computer">Iniciar conectando a um computador</string>
 <string name="activate_by_computer_desc">Para dispositivos sem root, você precisa usar adb para iniciar o AxManager (requer conexão com computador). Este processo precisa ser repetido toda vez que o dispositivo for reiniciado.</string>
 <string name="activate_by_wireless">Iniciar via Depuração Sem Fio</string>
@@ -700,7 +700,7 @@
 <string name="quickshell_save_column">Salvar</string>
 <string name="quickshell_shell_section">Shell</string>
 <string name="run_in_any_terminal">Rodar em qualquer terminal</string>
-<string name="run_in_any_terminal_desc">Mesmos argumentos que sh, ex. -c 'id'. O terminal precisa de acesso ao armazenamento (termux-setup-storage no Termux).</string>
+<string name="run_in_any_terminal_desc">Mesmos argumentos que sh, ex. -c \'id\'. O terminal precisa de acesso ao armazenamento (termux-setup-storage no Termux).</string>
 <string name="run_in_any_terminal_run">Rodar com sh</string>
 <string name="run_in_any_terminal_install">Instalar no Termux, depois apenas axsh</string>
 <string name="run_in_any_terminal_failed">Não pode escrever %s: o servidor está rodando?</string>
@@ -760,10 +760,10 @@
 <string name="quick_settings_error_integer">Um slider inteiro precisa de números inteiros</string>
 <string name="quick_settings_error_range">Mín deve estar abaixo de máx, e o passo deve caber no intervalo</string>
 <plurals name="settings_value_matches">
-<item quantity="one">%1$d correspondência para "%2$s"</item>
-<item quantity="other">%1$d correspondências para "%2$s"</item>
+<item quantity="one">%1$d correspondência para \"%2$s\"</item>
+<item quantity="other">%1$d correspondências para \"%2$s\"</item>
 </plurals>
-<string name="settings_value_match_position">Correspondência %1$d de %2$d para "%3$s"</string>
+<string name="settings_value_match_position">Correspondência %1$d de %2$d para \"%3$s\"</string>
 <string name="settings_value_truncated">%1$d linhas · %2$d caracteres · toque para ver todos</string>
 <string name="settings_value_scroll_hint">%1$d linhas · %2$d caracteres · role dentro para ler todos</string>
 <string name="settings_copy_key">Copiar chave</string>
